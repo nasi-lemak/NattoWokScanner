@@ -276,6 +276,55 @@ async fn deep_scan(State(state): State<Shared>, Path(id): Path<String>) -> ApiRe
     Ok(Json(described))
 }
 
+#[derive(Deserialize)]
+struct OtherDevice {
+    other: String,
+}
+
+/// "These two entries are the same device": keep `id`, fold `other` into it.
+async fn merge_devices(
+    State(state): State<Shared>,
+    Path(id): Path<String>,
+    Json(body): Json<OtherDevice>,
+) -> ApiResult<Json<serde_json::Value>> {
+    let mut cur = state.current.lock().unwrap();
+    let name = cur.inv.merge(&id, &body.other).map_err(|e| ApiError(StatusCode::BAD_REQUEST, format!("{e:#}")))?;
+    state.workspace.save(&cur.key, &cur.inv)?;
+    Ok(Json(json!({ "name": name })))
+}
+
+async fn not_same(
+    State(state): State<Shared>,
+    Path(id): Path<String>,
+    Json(body): Json<OtherDevice>,
+) -> ApiResult<StatusCode> {
+    let mut cur = state.current.lock().unwrap();
+    cur.inv.mark_not_same(&id, &body.other);
+    state.workspace.save(&cur.key, &cur.inv)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Live mode: is each known device answering right now?
+async fn presence(State(state): State<Shared>) -> Json<serde_json::Value> {
+    let targets: Vec<(String, std::net::Ipv4Addr, Vec<u16>)> = {
+        let cur = state.current.lock().unwrap();
+        cur.inv
+            .current_view()
+            .map(|r| {
+                r.devices
+                    .iter()
+                    .filter(|d| !d.is_self)
+                    .map(|d| (d.id.clone(), d.ip, d.open_ports.iter().map(|p| p.port).collect()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let results = probe::check_many(targets, std::time::Duration::from_millis(900)).await;
+    let map: serde_json::Map<String, serde_json::Value> =
+        results.into_iter().map(|(id, rtt)| (id, json!(rtt))).collect();
+    Json(json!({ "at": Utc::now(), "devices": map }))
+}
+
 async fn trust_all(State(state): State<Shared>) -> ApiResult<Json<serde_json::Value>> {
     let mut cur = state.current.lock().unwrap();
     let n = cur.inv.trust_all_online();
@@ -324,6 +373,9 @@ pub fn router(state: Shared) -> Router {
         .route("/api/devices/{id}", patch(update_device).delete(forget_device))
         .route("/api/devices/{id}/wake", post(wake_device))
         .route("/api/devices/{id}/deep-scan", post(deep_scan))
+        .route("/api/devices/{id}/merge", post(merge_devices))
+        .route("/api/devices/{id}/not-same", post(not_same))
+        .route("/api/presence", get(presence))
         .route("/api/findings/{id}/ignore", post(ignore_finding).delete(unignore_finding))
         .route("/api/export/{format}", get(export))
         .layer(middleware::from_fn_with_state(state.clone(), guard))
@@ -446,6 +498,23 @@ mod tests {
             .body(Body::empty())
             .unwrap();
         assert_eq!(status(req).await, StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn presence_and_merge_endpoints() {
+        let req = HttpRequest::get("/api/presence")
+            .header("host", "localhost")
+            .header("x-nattowok-token", "secret")
+            .body(Body::empty())
+            .unwrap();
+        assert_eq!(status(req).await, StatusCode::OK);
+        let req = HttpRequest::post("/api/devices/AA:AA:AA:AA:AA:AA/merge")
+            .header("host", "localhost")
+            .header("x-nattowok-token", "secret")
+            .header("content-type", "application/json")
+            .body(Body::from("{\"other\":\"BB:BB:BB:BB:BB:BB\"}"))
+            .unwrap();
+        assert_eq!(status(req).await, StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]

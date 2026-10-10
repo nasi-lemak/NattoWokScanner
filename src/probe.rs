@@ -61,6 +61,43 @@ pub async fn futures_join_all<F: std::future::Future>(futs: impl IntoIterator<It
     results.into_iter().map(|r| r.expect("every future completed")).collect()
 }
 
+/// Quick "is it there right now?" check used by live mode: the device's own
+/// open ports plus the usual knock ports, and ping when available. Returns
+/// the round-trip time in milliseconds.
+pub async fn check_alive(ip: Ipv4Addr, known_open: &[u16], timeout: Duration) -> Option<f64> {
+    let mut ports: Vec<u16> = Vec::new();
+    for &p in known_open.iter().chain(KNOCK_PORTS) {
+        if !ports.contains(&p) && ports.len() < 16 {
+            ports.push(p);
+        }
+    }
+    let knock = async {
+        futures_join_all(ports.iter().map(|&p| tcp_probe(SocketAddr::new(IpAddr::V4(ip), p), timeout)))
+            .await
+            .into_iter()
+            .filter(|(s, _)| *s != TcpState::Silent)
+            .map(|(_, rtt)| rtt.as_secs_f64() * 1000.0)
+            .min_by(f64::total_cmp)
+    };
+    let (k, p) = tokio::join!(knock, system_ping(ip, timeout));
+    p.or(k).map(|ms| (ms * 10.0).round() / 10.0)
+}
+
+/// Checks many devices at once. Keys are whatever the caller uses to tell
+/// devices apart.
+pub async fn check_many(targets: Vec<(String, Ipv4Addr, Vec<u16>)>, timeout: Duration) -> Vec<(String, Option<f64>)> {
+    let limit = Arc::new(Semaphore::new(32));
+    let mut set = tokio::task::JoinSet::new();
+    for (key, ip, ports) in targets {
+        let limit = limit.clone();
+        set.spawn(async move {
+            let _permit = limit.acquire_owned().await;
+            (key, check_alive(ip, &ports, timeout).await)
+        });
+    }
+    set.join_all().await
+}
+
 pub fn ping_available() -> bool {
     static AVAILABLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *AVAILABLE.get_or_init(|| {

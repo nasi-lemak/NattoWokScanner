@@ -94,6 +94,21 @@ enum Command {
     },
     /// Remove a device and its history
     Forget { device: String },
+    /// Say two entries are one device (e.g. a phone that changed its private
+    /// address); the older entry's name, notes and history move to the first
+    Merge {
+        /// The device as it is now (name, IP or MAC)
+        device: String,
+        /// The earlier entry it should take over
+        earlier: String,
+    },
+    /// Watch devices answer in real time. Unplug something and see which one
+    /// stops answering: the easy way to work out what a mystery device is
+    Live {
+        /// Seconds between checks
+        #[arg(long, default_value_t = 2, value_parser = clap::value_parser!(u64).range(1..))]
+        interval: u64,
+    },
     /// Scan repeatedly and report changes; optionally run a command for each
     Watch {
         #[command(flatten)]
@@ -352,6 +367,68 @@ async fn run(cli: Cli) -> Result<()> {
             println!("Saved {label}{}.", if trusted { " (trusted)" } else { "" });
             Ok(())
         }
+        Command::Merge { device, earlier } => {
+            let (key, mut inv) = current()?;
+            let keep = resolve(&inv, &device)?.id.clone();
+            let from = resolve(&inv, &earlier)?.id.clone();
+            let name = inv.merge(&keep, &from)?;
+            workspace.save(&key, &inv)?;
+            println!("Merged. {name} keeps its name and history.");
+            Ok(())
+        }
+        Command::Live { interval } => {
+            let (_, inv) = current()?;
+            let view = inv.current_view().context("no devices known yet; run `nattowok scan` first")?;
+            let devices: Vec<Device> = view.devices.into_iter().filter(|d| !d.is_self).collect();
+            let targets: Vec<_> = devices
+                .iter()
+                .map(|d| (d.id.clone(), d.ip, d.open_ports.iter().map(|p| p.port).collect::<Vec<u16>>()))
+                .collect();
+            let name_of = |id: &str| {
+                devices
+                    .iter()
+                    .find(|d| d.id == id)
+                    .map(|d| format!("{} ({})", d.display_name(), d.ip))
+                    .unwrap_or_default()
+            };
+            println!(
+                "Checking {} devices every {interval} s. Unplug or switch something off and watch which one stops answering. Ctrl+C to stop.\n",
+                devices.len()
+            );
+            let mut last: std::collections::HashMap<String, bool> = std::collections::HashMap::new();
+            loop {
+                let results = probe::check_many(targets.clone(), Duration::from_millis(900)).await;
+                let stamp = chrono::Local::now().format("%H:%M:%S").to_string();
+                if last.is_empty() {
+                    let silent: Vec<String> =
+                        results.iter().filter(|(_, r)| r.is_none()).map(|(id, _)| name_of(id)).collect();
+                    let up = results.len() - silent.len();
+                    println!("{} {up} answering now.", paint.dim(&stamp));
+                    if !silent.is_empty() {
+                        println!(
+                            "{} Not answering (offline, or doesn't respond to quick checks): {}",
+                            paint.dim(&stamp),
+                            silent.join(", ")
+                        );
+                    }
+                }
+                for (id, rtt) in &results {
+                    let up = rtt.is_some();
+                    if let Some(&was) = last.get(id) {
+                        if was && !up {
+                            println!("{} {} {} stopped answering", paint.dim(&stamp), paint.red("●"), name_of(id));
+                        } else if !was && up {
+                            println!("{} {} {} is answering again", paint.dim(&stamp), paint.green("●"), name_of(id));
+                        }
+                    }
+                    last.insert(id.clone(), up);
+                }
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(interval)) => {}
+                    _ = tokio::signal::ctrl_c() => return Ok(()),
+                }
+            }
+        }
         Command::Forget { device } => {
             let (key, mut inv) = current()?;
             let id = resolve(&inv, &device)?.id.clone();
@@ -592,6 +669,18 @@ fn print_report(paint: &Paint, report: &ScanReport, events: &[Event]) {
         };
         println!("  {sev} {}", f.title);
         println!("         {} {}", paint.blue("→"), f.fix);
+    }
+    for d in report.devices.iter().filter(|d| d.possible_match.is_some()) {
+        let m = d.possible_match.as_ref().expect("filtered");
+        println!(
+            "\n  {} {} at {} looks like {} (offline): {}.",
+            paint.blue("?"),
+            d.display_name(),
+            d.ip,
+            paint.bold(&m.name),
+            m.reasons.join(", ").to_lowercase()
+        );
+        println!("    If it is: nattowok merge {} {}", d.ip, m.id);
     }
     if !events.is_empty() {
         println!("\n  {}", paint.bold("Changes"));

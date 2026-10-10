@@ -12,6 +12,8 @@ const state = {
   query: "",
   openDevice: null,
   pollTimer: null,
+  // Live mode: id -> { up, rtt, since, changed, everUp }
+  live: { on: false, timer: null, status: {} },
 };
 
 // ---------- helpers ----------
@@ -35,12 +37,23 @@ async function api(path, options = {}) {
 }
 
 let toastTimer;
-function toast(message) {
+function toast(message, action) {
   const el = $("#toast");
-  el.textContent = message;
+  $("#toast-text").textContent = message;
+  const btn = $("#toast-action");
+  btn.hidden = !action;
+  if (action) {
+    btn.textContent = action.label;
+    btn.onclick = () => { el.hidden = true; action.run(); };
+  }
   el.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => (el.hidden = true), 3200);
+  toastTimer = setTimeout(() => (el.hidden = true), action ? 9000 : 3200);
+}
+
+function secondsAgo(ms) {
+  const s = Math.round((Date.now() - ms) / 1000);
+  return s < 60 ? `${s}s ago` : `${Math.floor(s / 60)} min ago`;
 }
 
 function ago(iso) {
@@ -224,12 +237,16 @@ function deviceRow(d) {
   if (d.is_new) badges.push('<span class="badge new">New</span>');
   if (issues.length) badges.push(`<span class="badge ${worstSeverity(issues)}">${issues.length} issue${issues.length > 1 ? "s" : ""}</span>`);
   if (d.trusted && !d.is_self) badges.push('<span class="badge trusted" title="You marked this as yours">✓ Trusted</span>');
+  if (d.possible_match) badges.push(`<span class="badge info">Looks like ${esc(d.possible_match.name)}?</span>`);
   const what = [d.model || KIND_LABELS[d.kind], d.vendor || (d.private_mac ? "Private address" : null)].filter(Boolean);
   const meta = [...new Set(what)].join(" · ");
-  const right = d.online
-    ? `<span class="mono">${esc(d.ip)}</span><span>${d.latency_ms != null ? `${d.latency_ms} ms` : ""}</span>`
-    : `<span class="mono">${esc(d.ip)}</span><span>seen ${esc(ago(d.last_seen))}</span>`;
-  return `<button class="device ${d.online ? "" : "offline"}" data-device="${esc(d.id)}">
+  const status = state.live.on ? liveCell(d)
+    : d.online ? `<span>${d.latency_ms != null ? `${d.latency_ms} ms` : ""}</span>`
+    : `<span>seen ${esc(ago(d.last_seen))}</span>`;
+  const right = `<span class="mono">${esc(d.ip)}</span>${status}`;
+  const live = state.live.status[d.id];
+  const flash = state.live.on && live?.changed && Date.now() - live.changed < 15000 ? (live.up ? "flash-up" : "flash-down") : "";
+  return `<button class="device ${d.online ? "" : "offline"} ${flash}" data-device="${esc(d.id)}">
       <div class="kind-icon">${icon(d.kind)}</div>
       <div style="min-width:0">
         <div class="title"><span class="name">${esc(name(d))}</span>${badges.join("")}</div>
@@ -237,6 +254,60 @@ function deviceRow(d) {
       </div>
       <div class="right">${right}</div>
     </button>`;
+}
+
+function liveCell(d) {
+  if (d.is_self) return '<span class="live on">● this computer</span>';
+  const s = state.live.status[d.id];
+  if (!s) return '<span class="live">checking…</span>';
+  if (s.up) return `<span class="live on">● answering${s.rtt != null ? ` · ${s.rtt} ms` : ""}</span>`;
+  if (s.everUp) return `<span class="live off">● stopped answering ${secondsAgo(s.since)}</span>`;
+  return '<span class="live" title="Offline, or it doesn\'t answer quick checks, so live mode can\'t follow it">○ not answering</span>';
+}
+
+async function livePoll() {
+  if (!state.live.on) return;
+  try {
+    const r = await api("/api/presence");
+    const now = Date.now();
+    for (const [id, rtt] of Object.entries(r.devices)) {
+      const up = rtt !== null;
+      const prev = state.live.status[id];
+      if (!prev) {
+        state.live.status[id] = { up, rtt, since: now, changed: null, everUp: up };
+        continue;
+      }
+      if (prev.up !== up) {
+        prev.since = now;
+        prev.changed = now;
+        const d = state.data?.report?.devices.find((x) => x.id === id);
+        if (d && !up && prev.everUp) {
+          toast(`${name(d)} just stopped answering. Is that what you unplugged?`, { label: "Name it", run: () => openDrawer(d.id) });
+        } else if (d && up) {
+          toast(`${name(d)} is answering again`, { label: "Open", run: () => openDrawer(d.id) });
+        }
+      }
+      prev.up = up;
+      prev.rtt = rtt;
+      prev.everUp ||= up;
+    }
+    if (state.data) renderDevices(state.data.report);
+  } catch (e) {
+    toast(`Live check failed: ${e.message}`);
+  }
+  if (state.live.on) state.live.timer = setTimeout(livePoll, 2000);
+}
+
+function setLive(on) {
+  state.live.on = on;
+  clearTimeout(state.live.timer);
+  state.live.status = {};
+  $("#live-btn").setAttribute("aria-pressed", String(on));
+  $("#live-btn").classList.toggle("active", on);
+  $("#live-banner").hidden = !on;
+  document.body.classList.toggle("live-on", on);
+  if (on) livePoll();
+  if (state.data) renderDevices(state.data.report);
 }
 
 function renderDevices(report) {
@@ -402,12 +473,19 @@ function renderDrawer(d) {
       </div>
       <button class="btn ghost icon-only close" id="drawer-close" aria-label="Close">✕</button>
     </div>
+    ${d.possible_match ? `<div class="match-card">
+      <strong>Is this ${esc(d.possible_match.name)}?</strong>
+      <p>It looks like a device you've seen before that's now offline. Devices can come back under a new hardware address, for example when a phone changes its private Wi-Fi address.</p>
+      <ul>${d.possible_match.reasons.map((r) => `<li>${esc(r)}</li>`).join("")}</ul>
+      <div class="actions"><button class="btn small primary" id="match-yes">Yes, same device</button><button class="btn small" id="match-no">No, it's a different one</button></div>
+    </div>` : ""}
     <label class="switch"><input type="checkbox" id="dev-trusted" ${d.trusted ? "checked" : ""}> I recognise this device</label>
 
     <div class="section">
       <h4>Why we think it's a ${esc((KIND_LABELS[d.kind] || "").toLowerCase())}</h4>
       ${d.kind === "unknown"
-        ? `<p style="font-size:14px">This device didn't reveal much about itself. Try <strong>Check all ports</strong> below, or open its web page if it has one. Once you know what it is, give it a name.</p>`
+        ? `<p style="font-size:14px">This device didn't reveal much about itself. Try <strong>Check all ports</strong> below, or open its web page if it has one.</p>
+          <p style="font-size:14px"><strong>Still a mystery?</strong> Turn on <strong>Live</strong> above the device list, then unplug or switch off things one at a time. When this one stops answering, you've found it. Type a name at the top; it'll be remembered when you plug it back in.</p>`
         : `<div class="confidence"><span>${d.confidence}% sure</span><div class="meter"><div style="width:${d.confidence}%"></div></div></div>`}
       <ul class="evidence">${ev.map((e) => `<li><span class="src">${esc(e.source)}</span><span>${esc(e.detail)}</span></li>`).join("")}</ul>
     </div>
@@ -455,6 +533,23 @@ async function saveDevice(id, patch) {
 
 function wireDrawer(d) {
   $("#drawer-close").onclick = closeDrawer;
+  const yes = $("#match-yes");
+  if (yes) yes.onclick = async () => {
+    try {
+      const r = await api(`/api/devices/${encodeURIComponent(d.id)}/merge`, { method: "POST", body: JSON.stringify({ other: d.possible_match.id }) });
+      toast(`Got it: this is ${r.name}. Its name and history carry over.`);
+      await refresh();
+    } catch (e) { toast(e.message); }
+  };
+  const no = $("#match-no");
+  if (no) no.onclick = async () => {
+    try {
+      await api(`/api/devices/${encodeURIComponent(d.id)}/not-same`, { method: "POST", body: JSON.stringify({ other: d.possible_match.id }) });
+      toast("Noted. Give this one its own name.");
+      await refresh();
+      $("#dev-name")?.focus();
+    } catch (e) { toast(e.message); }
+  };
   const nameInput = $("#dev-name");
   nameInput.onchange = () => {
     const v = nameInput.value.trim();
@@ -564,6 +659,8 @@ $("#export-btn").onclick = () => {
   $("#export-btn").setAttribute("aria-expanded", String(!m.hidden));
 };
 $("#scrim").onclick = closeDrawer;
+$("#live-btn").onclick = () => setLive(!state.live.on);
+$("#live-stop").onclick = () => setLive(false);
 $("#search").oninput = (e) => { state.query = e.target.value.trim(); renderDevices(state.data?.report); };
 $("#sort").onchange = (e) => { state.sort = e.target.value; renderDevices(state.data?.report); };
 

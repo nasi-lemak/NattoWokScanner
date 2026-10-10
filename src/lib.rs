@@ -5,6 +5,7 @@ pub mod dns;
 pub mod doctor;
 pub mod http;
 pub mod identify;
+pub mod matching;
 pub mod mdns;
 pub mod model;
 pub mod neighbors;

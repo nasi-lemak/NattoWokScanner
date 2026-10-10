@@ -212,6 +212,18 @@ pub struct Device {
     /// Seen for the first time in the most recent scan.
     #[serde(default)]
     pub is_new: bool,
+    /// A known, currently offline device this new one looks like (e.g. a
+    /// phone that rotated its private Wi-Fi address).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub possible_match: Option<PossibleMatch>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct PossibleMatch {
+    pub id: String,
+    pub name: String,
+    pub score: u32,
+    pub reasons: Vec<String>,
 }
 
 fn default_true() -> bool {
@@ -249,6 +261,7 @@ impl Device {
             first_seen: None,
             last_seen: None,
             is_new: false,
+            possible_match: None,
         }
     }
 

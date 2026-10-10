@@ -287,10 +287,29 @@ textarea { min-height: 70px; resize: vertical; }
 .event.ip_changed .ev-dot { background: var(--info); }
 .event a { cursor: pointer; }
 
+/* Live mode */
+.live-chip { display: inline-flex; align-items: center; gap: 6px; }
+.live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.live-chip.active { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.live-chip.active .live-dot { background: var(--accent-ink); animation: pulse 1.2s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .3; } }
+.live-banner { background: var(--accent-soft); }
+.live { white-space: nowrap; }
+.live.on { color: var(--good); }
+.live.off { color: var(--bad); font-weight: 600; }
+.device.flash-down { border-color: var(--bad); box-shadow: 0 0 0 3px var(--bad-soft); }
+.device.flash-up { border-color: var(--good); box-shadow: 0 0 0 3px var(--good-soft); }
+.match-card { background: var(--info-soft); border-radius: var(--radius); padding: 12px 14px; margin: 0 0 14px; font-size: 14px; }
+.match-card p { margin: 6px 0; }
+.match-card ul { margin: 6px 0 10px; padding-left: 18px; color: var(--muted); }
+.event.recognized .ev-dot { background: var(--good); }
+
 .toast {
   position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); z-index: 50;
   background: var(--text); color: var(--bg); padding: 10px 16px; border-radius: 10px; box-shadow: var(--shadow); font-size: 14px;
+  display: flex; align-items: center; gap: 12px; max-width: calc(100vw - 32px);
 }
+.toast .btn { background: var(--bg); color: var(--text); border-color: transparent; }
 
 @media (max-width: 720px) {
   .topbar, main, .tabs, .progress { padding-left: 16px; padding-right: 16px; }
@@ -300,6 +319,7 @@ textarea { min-height: 70px; resize: vertical; }
   .progress-bar { flex-basis: 100px; }
   .device { grid-template-columns: 40px minmax(0, 1fr); }
   .device .right { display: none; }
+  .live-on .device .right { display: flex; grid-column: 2; flex-direction: row; gap: 10px; align-items: baseline; }
   .chain { grid-template-columns: repeat(2, 1fr); row-gap: 16px; }
   .hop:nth-child(2)::after { display: none; }
   .kv { grid-template-columns: 110px minmax(0, 1fr); }

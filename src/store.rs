@@ -5,11 +5,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::model::{Device, NetworkInfo, ScanReport};
+use crate::matching;
+use crate::model::{Device, NetworkInfo, PossibleMatch, ScanReport};
 use crate::security;
 
 const MAX_EVENTS: usize = 2000;
@@ -46,6 +47,8 @@ pub enum EventKind {
     IpChanged,
     NewOpenPort,
     NewFinding,
+    /// A known device came back under a new hardware address.
+    Recognized,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -73,6 +76,10 @@ pub struct Inventory {
     /// network (same address range, same devices): MAC of the old router.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub previous_router: Option<String>,
+    /// Pairs of device ids people said are different devices, so we stop
+    /// suggesting they're the same.
+    #[serde(default)]
+    pub not_same: BTreeSet<(String, String)>,
 }
 
 /// Fields people can change about a device.
@@ -290,8 +297,25 @@ impl Inventory {
         let first_scan = self.devices.is_empty();
         let mut events = Vec::new();
         let now_online: BTreeSet<String> = report.devices.iter().map(|d| d.id.clone()).collect();
+        let mut claimed = BTreeSet::new();
 
         for d in &mut report.devices {
+            // A stranger may be a known device with a new hardware address.
+            let mut recognised = None;
+            if !first_scan
+                && !self.devices.contains_key(&d.id)
+                && !d.is_gateway
+                && !d.is_self
+                && let Some((m, auto)) = self.best_match(d, &now_online, &claimed)
+            {
+                claimed.insert(m.id.clone());
+                if auto {
+                    self.rekey(&m.id, &d.id);
+                    recognised = Some(m);
+                } else {
+                    d.possible_match = Some(m);
+                }
+            }
             match self.devices.get_mut(&d.id) {
                 None => {
                     d.is_new = !first_scan;
@@ -346,6 +370,18 @@ impl Inventory {
                     known.last_seen = at;
                     known.times_seen += 1;
                     known.snapshot = d.clone();
+                    if let Some(m) = &recognised {
+                        changes.insert(
+                            0,
+                            (
+                                EventKind::Recognized,
+                                format!(
+                                    "{label} came back with a new hardware address and was recognised ({})",
+                                    m.reasons.iter().take(2).map(|r| r.to_lowercase()).collect::<Vec<_>>().join(", ")
+                                ),
+                            ),
+                        );
+                    }
                     for (kind, msg) in changes {
                         events.push(self.push_event(at, kind, Some(&d.id), msg));
                     }
@@ -413,15 +449,37 @@ impl Inventory {
         // Trust and names may have changed since the scan.
         report.findings = security::network_findings(&report.network, &report.devices, self.previous_router.as_deref());
         self.mark_ignored(&mut report);
-        let online: BTreeSet<&str> = report.devices.iter().map(|d| d.id.as_str()).collect();
+        let online: BTreeSet<String> = report.devices.iter().map(|d| d.id.clone()).collect();
+        // Drop suggestions that no longer make sense: both are online (so they
+        // can't be one device), the old entry is gone, or someone said no.
+        let stale: Vec<String> = report
+            .devices
+            .iter()
+            .filter(|d| {
+                d.possible_match.as_ref().is_some_and(|m| {
+                    online.contains(&m.id) || !self.devices.contains_key(&m.id) || self.is_not_same(&d.id, &m.id)
+                })
+            })
+            .map(|d| d.id.clone())
+            .collect();
+        for d in &mut report.devices {
+            if stale.contains(&d.id) {
+                d.possible_match = None;
+            } else if let Some(m) = d.possible_match.as_mut()
+                && let Some(k) = self.devices.get(&m.id)
+            {
+                m.name = k.custom_name.clone().unwrap_or_else(|| k.snapshot.name.clone());
+            }
+        }
         let mut offline: Vec<Device> = self
             .devices
             .values()
-            .filter(|k| !online.contains(k.id.as_str()))
+            .filter(|k| !online.contains(&k.id))
             .map(|k| {
                 let mut d = k.snapshot.clone();
                 d.online = false;
                 d.is_new = false;
+                d.possible_match = None;
                 d.findings.clear();
                 self.decorate(&mut d);
                 d
@@ -481,6 +539,137 @@ impl Inventory {
             r.devices.retain(|d| d.id != id);
         }
         self.devices.remove(id).is_some()
+    }
+
+    fn is_not_same(&self, a: &str, b: &str) -> bool {
+        let pair = if a < b { (a.to_string(), b.to_string()) } else { (b.to_string(), a.to_string()) };
+        self.not_same.contains(&pair)
+    }
+
+    /// The offline known device a newcomer most resembles, and whether the
+    /// match is certain enough to apply without asking.
+    fn best_match(
+        &self,
+        d: &Device,
+        now_online: &BTreeSet<String>,
+        claimed: &BTreeSet<String>,
+    ) -> Option<(PossibleMatch, bool)> {
+        let mut scored: Vec<(u32, bool, Vec<String>, &KnownDevice)> = self
+            .devices
+            .values()
+            .filter(|k| !now_online.contains(&k.id) && !claimed.contains(&k.id))
+            .filter(|k| !k.snapshot.is_gateway && !k.snapshot.is_self && !self.is_not_same(&d.id, &k.id))
+            .map(|k| {
+                let (score, by_name, reasons) = matching::similarity(d, &k.snapshot);
+                (score, by_name, reasons, k)
+            })
+            .filter(|(score, ..)| *score >= matching::SUGGEST)
+            .collect();
+        scored.sort_by_key(|(score, ..)| std::cmp::Reverse(*score));
+        let runner_up = scored.get(1).map_or(0, |s| s.0);
+        let (score, by_name, reasons, k) = scored.into_iter().next()?;
+        // Only private addresses rotate, so only those are carried over silently.
+        let auto = score >= matching::AUTO
+            && by_name
+            && d.private_mac
+            && k.snapshot.private_mac
+            && runner_up < matching::SUGGEST;
+        let name = k.custom_name.clone().unwrap_or_else(|| k.snapshot.name.clone());
+        Some((PossibleMatch { id: k.id.clone(), name, score, reasons }, auto))
+    }
+
+    /// Moves a known device to a new id, keeping its labels and history.
+    fn rekey(&mut self, old: &str, new: &str) {
+        let Some(mut k) = self.devices.remove(old) else { return };
+        k.id = new.to_string();
+        self.devices.insert(new.to_string(), k);
+        if self.online.remove(old) {
+            self.online.insert(new.to_string());
+        }
+        self.remap(old, new);
+    }
+
+    /// Points events, dismissed findings and suggestions at `new` instead of `old`.
+    fn remap(&mut self, old: &str, new: &str) {
+        for e in &mut self.events {
+            if e.device_id.as_deref() == Some(old) {
+                e.device_id = Some(new.to_string());
+            }
+        }
+        let suffix = format!(":{old}");
+        self.ignored_findings = self
+            .ignored_findings
+            .iter()
+            .map(|f| f.strip_suffix(&suffix).map_or_else(|| f.clone(), |prefix| format!("{prefix}:{new}")))
+            .collect();
+        if let Some(r) = self.last_report.as_mut() {
+            r.devices.retain(|d| d.id != old);
+            for d in &mut r.devices {
+                if d.possible_match.as_ref().is_some_and(|m| m.id == old) {
+                    d.possible_match = None;
+                }
+            }
+        }
+    }
+
+    /// People confirmed that `from` (an older entry) is the same device as
+    /// `keep`: fold its name, notes, tags, trust and history into `keep`.
+    pub fn merge(&mut self, keep: &str, from: &str) -> Result<String> {
+        ensure!(keep != from, "those are the same entry already");
+        let old = self.devices.get(from).cloned().context("the earlier device wasn't found")?;
+        let k = self.devices.get_mut(keep).context("device not found")?;
+        if k.custom_name.is_none() {
+            k.custom_name = old.custom_name.clone();
+        }
+        k.notes = match (k.notes.take(), old.notes) {
+            (Some(a), Some(b)) if a != b => Some(format!("{b}\n{a}")),
+            (a, b) => a.or(b),
+        };
+        k.tags.extend(old.tags);
+        k.tags.sort();
+        k.tags.dedup();
+        k.trusted |= old.trusted;
+        k.first_seen = k.first_seen.min(old.first_seen);
+        k.times_seen += old.times_seen;
+        let mut history = old.ip_history;
+        history.append(&mut k.ip_history);
+        history.sort_by_key(|(_, at)| *at);
+        history.dedup_by_key(|(ip, _)| *ip);
+        let excess = history.len().saturating_sub(MAX_IP_HISTORY);
+        k.ip_history = history.split_off(excess);
+        k.snapshot.possible_match = None;
+        k.snapshot.is_new = false;
+        let label = k.custom_name.clone().unwrap_or_else(|| k.snapshot.name.clone());
+        self.devices.remove(from);
+        self.online.remove(from);
+        self.remap(from, keep);
+        if let Some(d) = self.last_report.as_mut().and_then(|r| r.devices.iter_mut().find(|d| d.id == keep)) {
+            d.possible_match = None;
+            d.is_new = false;
+        }
+        self.push_event(
+            Utc::now(),
+            EventKind::Recognized,
+            Some(keep),
+            format!("{label} was merged with its earlier entry"),
+        );
+        Ok(label)
+    }
+
+    /// People said these two are different devices.
+    pub fn mark_not_same(&mut self, a: &str, b: &str) {
+        let pair = if a < b { (a.to_string(), b.to_string()) } else { (b.to_string(), a.to_string()) };
+        self.not_same.insert(pair);
+        if let Some(r) = self.last_report.as_mut() {
+            for d in r.devices.iter_mut().filter(|d| d.id == a || d.id == b) {
+                d.possible_match = None;
+            }
+        }
+        for id in [a, b] {
+            if let Some(k) = self.devices.get_mut(id) {
+                k.snapshot.possible_match = None;
+            }
+        }
     }
 
     pub fn trust_all_online(&mut self) -> usize {
@@ -621,6 +810,72 @@ mod tests {
         let view = inv.current_view().unwrap();
         assert!(view.findings.iter().any(|f| f.id.starts_with("gateway-changed")));
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    fn phone(ip: u8, mac: &str, host: &str) -> Device {
+        let mut d = dev(ip, mac);
+        d.private_mac = true;
+        d.kind = crate::model::DeviceKind::Phone;
+        d.hostname = Some(host.into());
+        d.name = host.into();
+        d
+    }
+
+    #[test]
+    fn recognises_rotated_private_addresses() {
+        let mut inv = Inventory::default();
+        let other = dev(2, "00:00:00:00:00:02");
+        let old = phone(23, "DA:00:00:00:00:01", "Kims-iPhone");
+        inv.apply_scan(&mut report(vec![other.clone(), old.clone()], 0));
+        inv.update(
+            &old.id,
+            DeviceUpdate { custom_name: Some("Kim's phone".into()), trusted: Some(true), ..Default::default() },
+        );
+        inv.apply_scan(&mut report(vec![other.clone()], 1)); // phone leaves
+
+        let new = phone(23, "DA:00:00:00:00:99", "Kims-iPhone");
+        let mut r = report(vec![other, new.clone()], 2);
+        let ev = inv.apply_scan(&mut r);
+        assert!(ev.iter().any(|e| e.kind == EventKind::Recognized), "{ev:?}");
+        assert!(!ev.iter().any(|e| e.kind == EventKind::NewDevice));
+        let d = r.devices.iter().find(|d| d.id == new.id).unwrap();
+        assert_eq!(d.custom_name.as_deref(), Some("Kim's phone"));
+        assert!(d.trusted);
+        assert!(!d.is_new);
+        assert!(!inv.devices.contains_key(&old.id));
+        assert!(inv.events.iter().all(|e| e.device_id.as_deref() != Some(old.id.as_str())));
+    }
+
+    #[test]
+    fn suggests_then_merges_or_dismisses() {
+        let mut inv = Inventory::default();
+        let mut old = dev(40, "00:80:92:00:00:01");
+        old.kind = crate::model::DeviceKind::Printer;
+        old.vendor = Some("Seiko Epson".into());
+        inv.apply_scan(&mut report(vec![old.clone()], 0));
+        inv.update(&old.id, DeviceUpdate { custom_name: Some("Office printer".into()), ..Default::default() });
+        inv.apply_scan(&mut report(vec![], 1));
+
+        // Same IP, kind and maker but a different (global) MAC: ask, don't assume.
+        let mut new = dev(40, "00:80:92:00:00:02");
+        new.kind = crate::model::DeviceKind::Printer;
+        new.vendor = Some("Seiko Epson".into());
+        let mut r = report(vec![new.clone()], 2);
+        inv.apply_scan(&mut r);
+        let m = r.devices[0].possible_match.clone().expect("suggestion");
+        assert_eq!(m.id, old.id);
+        assert_eq!(inv.current_view().unwrap().devices[0].possible_match.as_ref().unwrap().name, "Office printer");
+
+        let mut no = inv.clone();
+        no.mark_not_same(&new.id, &old.id);
+        assert!(no.current_view().unwrap().devices[0].possible_match.is_none());
+
+        assert_eq!(inv.merge(&new.id, &old.id).unwrap(), "Office printer");
+        let view = inv.current_view().unwrap();
+        assert_eq!(view.devices.len(), 1);
+        assert_eq!(view.devices[0].custom_name.as_deref(), Some("Office printer"));
+        assert!(view.devices[0].possible_match.is_none());
+        assert!(!view.devices[0].is_new);
     }
 
     #[test]

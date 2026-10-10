@@ -16,6 +16,8 @@ NattoWok is a network scanner in the spirit of Fing. It's built around a differe
 | Security warnings full of jargon | Each finding says **what it means and what to do**, in plain language. If something is intentional, **dismiss it** and it stops counting against your score. |
 | "The internet is slow" with no idea why | The **Internet doctor** tests each hop (this computer → router → internet provider → DNS), tells you **which one is the problem**, and benchmarks DNS servers to suggest a faster one. It also spots Wi-Fi sign-in pages. |
 | Having to remember what changed | A **timeline** of devices joining, leaving, changing address, or opening new ports. Mark devices you recognise as trusted, and anything new stands out. |
+| "Which box is this mystery device?" | Turn on **Live mode** and unplug things one at a time. The moment a device stops answering, its row turns red and NattoWok asks *"Is that what you unplugged? Name it."* The name sticks when you plug it back in. |
+| Phones coming back as "new" after changing their private address | When a newcomer matches a recently offline device (same name, model, ports, address…), NattoWok **carries the name over** automatically if it's certain, or asks *"Is this Sam's phone?"* with the reasons. |
 | Laptops mixing up home, office and café devices | Each network gets **its own inventory**, told apart by the router's hardware address. If your usual devices show up behind an unfamiliar router, you get a warning about possible impersonation. |
 | Needing an account or a phone app | Runs entirely on your computer. Nothing is uploaded anywhere. |
 | Needing root/admin | Discovery works **without root**: TCP probing (a refused connection proves a host is alive), the OS neighbor table, mDNS/Bonjour, UPnP/SSDP and NetBIOS. |
@@ -62,6 +64,8 @@ nattowok devices                    # everything known on this network, online o
 nattowok doctor                     # why is the internet slow?
 nattowok ports "Hallway camera"     # check ~1,100 ports on one device
 nattowok label 192.168.1.52 --name "Hallway camera" --trust --tag outdoor
+nattowok live                       # watch devices answer in real time; unplug one to find it
+nattowok merge 192.168.1.88 "Sam's phone"   # tell NattoWok two entries are one device
 nattowok wake "Office PC"           # Wake-on-LAN
 nattowok export md -o report.md     # a report for whoever helps you with tech
 nattowok networks                   # the networks NattoWok remembers
@@ -69,6 +73,16 @@ nattowok info                       # this computer's network settings
 ```
 
 Devices can be referred to by name, IP or MAC.
+
+### Naming a mystery device
+
+Every device can be named, unknown ones included. Names are tied to the device's hardware address, so they survive unplugging, reboots and IP changes. To work out which physical box an entry is:
+
+1. Turn on **Live** above the device list (or run `nattowok live`).
+2. Unplug or switch off devices one at a time.
+3. When a row turns red with *"stopped answering"*, that's the one. Click **Name it**.
+
+Live mode can only follow devices that answer quick checks. The rare device that ignores everything shows *"not answering"* from the start; for those, run a scan before and after unplugging and look at what went offline.
 
 ### Get notified about new devices
 
@@ -123,7 +137,8 @@ Layout:
 | `src/probe.rs`, `neighbors.rs`, `mdns.rs`, `ssdp.rs`, `netbios.rs`, `dns.rs` | Discovery primitives |
 | `src/identify.rs` | Explainable device identification |
 | `src/security.rs` | Plain-language findings and health score |
-| `src/store.rs` | Per-network inventory, change tracking |
+| `src/store.rs` | Per-network inventory, change tracking, merging |
+| `src/matching.rs` | Recognising devices that return under a new hardware address |
 | `src/doctor.rs` | Internet doctor |
 | `src/web.rs`, `web/` | Dashboard server and UI (embedded at compile time) |
 | `src/main.rs` | CLI |
