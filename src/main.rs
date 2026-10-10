@@ -41,6 +41,9 @@ enum Command {
         /// Start a scan right away
         #[arg(long)]
         scan: bool,
+        /// Set by the background service
+        #[arg(long, hide = true)]
+        service: bool,
     },
     /// Scan the network and show what's on it
     Scan {
@@ -123,6 +126,15 @@ enum Command {
         /// Command to run for every change
         #[arg(long, value_name = "CMD")]
         on_event: Option<String>,
+        /// Show a desktop notification for new devices and security issues
+        #[arg(long)]
+        notify: bool,
+    },
+    /// Keep NattoWok running in the background (starts when you log in),
+    /// scanning on a schedule and notifying you about changes
+    Service {
+        #[command(subcommand)]
+        action: ServiceAction,
     },
     /// Export the latest results
     Export {
@@ -138,6 +150,25 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum ServiceAction {
+    /// Install and start the background service
+    Install {
+        /// Minutes between automatic scans
+        #[arg(long, default_value_t = 15, value_parser = clap::value_parser!(u32).range(5..=1440))]
+        every: u32,
+        /// Don't show desktop notifications
+        #[arg(long)]
+        no_notifications: bool,
+    },
+    /// Stop and remove the background service
+    Uninstall,
+    /// Show whether the service is installed and running
+    Status,
+    /// Show a test notification
+    TestNotification,
 }
 
 #[derive(clap::Args, Clone)]
@@ -228,13 +259,19 @@ async fn run(cli: Cli) -> Result<()> {
     let workspace = Workspace::new(data_dir.clone());
     let current = || workspace.load_current(cli.interface.as_deref());
     let paint = Paint::new();
-    let command = cli.command.unwrap_or(Command::Ui { listen: "127.0.0.1:7878".parse()?, no_open: false, scan: false });
+    let command = cli.command.unwrap_or(Command::Ui {
+        listen: "127.0.0.1:7878".parse()?,
+        no_open: false,
+        scan: false,
+        service: false,
+    });
     match command {
-        Command::Ui { listen, no_open, scan } => {
+        Command::Ui { listen, no_open, scan, service } => {
             web::serve(web::ServeOptions {
                 listen,
                 open_browser: !no_open,
                 scan_on_start: scan,
+                service_mode: service,
                 scan_opts: ScanOptions { interface: cli.interface.clone(), ..Default::default() },
                 data_dir,
             })
@@ -437,7 +474,7 @@ async fn run(cli: Cli) -> Result<()> {
             println!("Forgot {id}.");
             Ok(())
         }
-        Command::Watch { scan: args, interval, on_new_device, on_event } => {
+        Command::Watch { scan: args, interval, on_new_device, on_event, notify } => {
             let opts = scan_options(&cli.interface, &args);
             println!("Watching the network every {interval} s. Press Ctrl+C to stop.");
             loop {
@@ -462,6 +499,9 @@ async fn run(cli: Cli) -> Result<()> {
                             if let (Some(cmd), nattowok::store::EventKind::NewDevice) = (&on_new_device, e.kind) {
                                 run_hook(cmd, e, device).await;
                             }
+                        }
+                        if notify {
+                            nattowok::notify::send_for(&events).await;
                         }
                     }
                     Err(e) => eprintln!("scan failed: {e:#}"),
@@ -489,6 +529,61 @@ async fn run(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
+        Command::Service { action } => match action {
+            ServiceAction::Install { every, no_notifications } => {
+                let what = nattowok::service::install(&data_dir, cli.interface.as_deref())?;
+                let mut settings = nattowok::settings::Settings::load(&data_dir);
+                settings.auto_scan_minutes = every;
+                settings.notifications = !no_notifications;
+                settings.save(&data_dir)?;
+                println!("{what}.");
+                println!(
+                    "NattoWok now runs in the background and scans every {every} minutes{}.",
+                    if no_notifications { "" } else { ", notifying you about new devices and security issues" }
+                );
+                println!("Dashboard: http://localhost:7878/  (running `nattowok` opens it too)");
+                if !no_notifications
+                    && let Err(e) = nattowok::notify::send(
+                        "NattoWok is watching your network",
+                        "You'll get a notification when something new joins.",
+                    )
+                    .await
+                {
+                    println!("{} {e:#}", paint.yellow("Notifications may not work:"));
+                }
+                Ok(())
+            }
+            ServiceAction::Uninstall => {
+                println!("{}", nattowok::service::uninstall()?);
+                Ok(())
+            }
+            ServiceAction::Status => {
+                let installed = nattowok::service::installed();
+                let settings = nattowok::settings::Settings::load(&data_dir);
+                let running =
+                    nattowok::http::get("127.0.0.1:7878".parse()?, "localhost:7878", "/", Duration::from_secs(2))
+                        .await
+                        .is_ok_and(|r| r.body.contains("nattowok-token"));
+                let yes_no = |b: bool| if b { paint.green("yes") } else { paint.dim("no") };
+                println!("  Installed       {}", yes_no(installed));
+                println!("  Dashboard up    {}", yes_no(running));
+                println!(
+                    "  Auto-scan       {}",
+                    if settings.auto_scan_minutes == 0 {
+                        "off".to_string()
+                    } else {
+                        format!("every {} min", settings.auto_scan_minutes)
+                    }
+                );
+                println!("  Notifications   {}", yes_no(settings.notifications));
+                Ok(())
+            }
+            ServiceAction::TestNotification => {
+                nattowok::notify::send("NattoWok test", "If you can see this, notifications work.").await?;
+                println!("Sent. If nothing appeared, check your system's notification settings.");
+                Ok(())
+            }
+        },
         Command::Networks => {
             let (key, _) = current()?;
             let networks = workspace.networks(&key);

@@ -66,6 +66,13 @@ function ago(iso) {
   return new Date(iso).toLocaleDateString();
 }
 
+function until(iso) {
+  const s = (new Date(iso).getTime() - Date.now()) / 1000;
+  if (s < 60) return "soon";
+  if (s < 3600) return `in ${Math.round(s / 60)} min`;
+  return `in ${Math.round(s / 3600)} h`;
+}
+
 function when(iso) {
   return iso ? new Date(iso).toLocaleString() : "—";
 }
@@ -163,11 +170,30 @@ function render() {
   }
 }
 
+function renderSettings(d) {
+  const s = d.settings || {};
+  const menu = $("#settings-menu");
+  if (!menu.contains(document.activeElement)) {
+    const auto = $("#set-auto");
+    if (![...auto.options].some((o) => Number(o.value) === s.auto_scan_minutes)) {
+      auto.add(new Option(`Every ${s.auto_scan_minutes} minutes`, s.auto_scan_minutes));
+    }
+    auto.value = String(s.auto_scan_minutes || 0);
+    $("#set-notify").checked = !!s.notifications;
+  }
+  $("#settings-dot").hidden = !s.auto_scan_minutes;
+  $("#set-bg").innerHTML = d.service_mode
+    ? "✓ NattoWok runs in the background, so it keeps watching after you close this tab and starts again when you log in."
+    : "Automatic scans run while NattoWok is open. To keep watching after you close it, and after restarts, run <code>nattowok service install</code> once.";
+}
+
 function renderHeader(d) {
+  renderSettings(d);
   const net = d.report?.network;
   if (net) {
     const via = net.interface_label || net.interface;
-    $("#net-label").textContent = `${net.scan_range} via ${via}${d.report ? ` · scanned ${ago(d.report.finished_at)}` : ""}`;
+    const next = d.next_scan_at ? ` · next scan ${until(d.next_scan_at)}` : "";
+    $("#net-label").textContent = `${net.scan_range} via ${via}${d.report ? ` · scanned ${ago(d.report.finished_at)}` : ""}${next}`;
   }
   const scan = d.scan;
   const btn = $("#scan-btn");
@@ -664,10 +690,11 @@ function setFilter(filter) {
 
 document.addEventListener("click", async (e) => {
   const t = e.target.closest("[data-device],[data-tab],[data-filter],[data-goto-filter],[data-goto-tab],[data-ignore],[data-unignore],[data-export],#trust-all,#doctor-btn");
-  if (!t) {
-    if (!e.target.closest(".menu")) $("#export-menu").hidden = true;
-    return;
+  if (!e.target.closest(".menu")) {
+    $("#export-menu").hidden = true;
+    $("#settings-menu").hidden = true;
   }
+  if (!t) return;
   if (t.dataset.device) return openDrawer(t.dataset.device);
   if (t.dataset.tab) return selectTab(t.dataset.tab);
   if (t.dataset.filter) return setFilter(t.dataset.filter);
@@ -699,9 +726,28 @@ $("#scan-btn").onclick = async () => {
   try { await api("/api/scan", { method: "POST" }); } catch (e) { toast(e.message); }
   refresh();
 };
+$("#settings-btn").onclick = () => {
+  const m = $("#settings-menu");
+  m.hidden = !m.hidden;
+  $("#export-menu").hidden = true;
+  $("#settings-btn").setAttribute("aria-expanded", String(!m.hidden));
+};
+async function saveSettings(patch) {
+  try {
+    await api("/api/settings", { method: "PATCH", body: JSON.stringify(patch) });
+    await refresh();
+  } catch (e) { toast(`Couldn't save: ${e.message}`); }
+}
+$("#set-auto").onchange = (e) => saveSettings({ auto_scan_minutes: Number(e.target.value) }).then(() =>
+  toast(Number(e.target.value) ? "Automatic scans on" : "Automatic scans off"));
+$("#set-notify").onchange = (e) => saveSettings({ notifications: e.target.checked });
+$("#set-test").onclick = async () => {
+  try { await api("/api/notify-test", { method: "POST" }); toast("Test notification sent"); } catch (e) { toast(e.message); }
+};
 $("#export-btn").onclick = () => {
   const m = $("#export-menu");
   m.hidden = !m.hidden;
+  $("#settings-menu").hidden = true;
   $("#export-btn").setAttribute("aria-expanded", String(!m.hidden));
 };
 $("#scrim").onclick = closeDrawer;

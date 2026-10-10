@@ -7,7 +7,8 @@
 
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::{Duration, SystemTime};
 
 use anyhow::Result;
 use axum::extract::{Path, Query, Request, State};
@@ -23,8 +24,9 @@ use serde_json::json;
 use crate::doctor::{self, Diagnosis};
 use crate::model::OpenPort;
 use crate::scan::{self, ScanOptions};
+use crate::settings::Settings;
 use crate::store::{DeviceUpdate, Inventory, Workspace};
-use crate::{netinfo, probe, report, security, wol};
+use crate::{netinfo, notify, probe, report, security, wol};
 
 const INDEX: &str = include_str!("../web/index.html");
 const APP_JS: &str = include_str!("../web/app.js");
@@ -43,9 +45,41 @@ pub struct Job {
 }
 
 /// The network being shown and its inventory.
+///
+/// The file on disk is the source of truth: the CLI may change it while the
+/// dashboard (or background service) runs, so it's re-read when it changes.
 struct Current {
     key: String,
     inv: Inventory,
+    mtime: Option<SystemTime>,
+}
+
+fn modified(ws: &Workspace, key: &str) -> Option<SystemTime> {
+    std::fs::metadata(Inventory::path(&ws.dir(key))).and_then(|m| m.modified()).ok()
+}
+
+impl Current {
+    fn new(ws: &Workspace, key: String, inv: Inventory) -> Self {
+        let mtime = modified(ws, &key);
+        Current { key, inv, mtime }
+    }
+
+    fn refresh(&mut self, ws: &Workspace) {
+        let now = modified(ws, &self.key);
+        if now.is_some()
+            && now != self.mtime
+            && let Ok(inv) = Inventory::load(&ws.dir(&self.key))
+        {
+            self.inv = inv;
+            self.mtime = now;
+        }
+    }
+
+    fn save(&mut self, ws: &Workspace) -> Result<()> {
+        ws.save(&self.key, &self.inv)?;
+        self.mtime = modified(ws, &self.key);
+        Ok(())
+    }
 }
 
 pub struct AppState {
@@ -55,11 +89,21 @@ pub struct AppState {
     doctor: Arc<Mutex<Job>>,
     diagnosis: Mutex<Option<Diagnosis>>,
     scan_opts: ScanOptions,
+    settings: Mutex<Settings>,
+    /// Started by `nattowok service install` rather than by hand.
+    service_mode: bool,
     token: String,
     remote: bool,
 }
 
 type Shared = Arc<AppState>;
+
+/// The current network's inventory, re-read first if the CLI changed it.
+fn current(state: &AppState) -> MutexGuard<'_, Current> {
+    let mut cur = state.current.lock().unwrap();
+    cur.refresh(&state.workspace);
+    cur
+}
 
 struct ApiError(StatusCode, String);
 
@@ -136,9 +180,14 @@ fn asset(content_type: &'static str, body: &'static str) -> Response {
 }
 
 async fn state_json(State(state): State<Shared>) -> Json<serde_json::Value> {
-    let cur = state.current.lock().unwrap();
+    let cur = current(&state);
     let events: Vec<_> = cur.inv.events.iter().rev().take(300).cloned().collect();
+    let settings = state.settings.lock().unwrap().clone();
+    let next_scan_at = next_scan_due(&state, &cur, &settings);
     Json(json!({
+        "settings": settings,
+        "next_scan_at": next_scan_at,
+        "service_mode": state.service_mode,
         "version": env!("CARGO_PKG_VERSION"),
         "network_key": cur.key,
         "networks": state.workspace.networks(&cur.key).len(),
@@ -175,14 +224,18 @@ fn finish(job: &Mutex<Job>, error: Option<String>) {
     j.finished_at = Some(Utc::now());
 }
 
-fn spawn_scan(state: Shared) -> ApiResult<()> {
+/// Starts a scan in the background. Automatic scans notify about changes
+/// (when enabled); someone pressing "Scan" is already looking.
+fn spawn_scan(state: Shared, automatic: bool) -> ApiResult<()> {
     begin(&state.scan)?;
     tokio::spawn(async move {
         let result = scan::run(&state.scan_opts, progress_into(state.scan.clone())).await;
+        let mut events = Vec::new();
         let error = match result {
             Ok(mut report) => match state.workspace.record_scan(&mut report) {
-                Ok((key, inv, _)) => {
-                    *state.current.lock().unwrap() = Current { key, inv };
+                Ok((key, inv, changes)) => {
+                    *state.current.lock().unwrap() = Current::new(&state.workspace, key, inv);
+                    events = changes;
                     None
                 }
                 Err(e) => Some(format!("Scan finished but couldn't be saved: {e:#}")),
@@ -190,12 +243,69 @@ fn spawn_scan(state: Shared) -> ApiResult<()> {
             Err(e) => Some(format!("{e:#}")),
         };
         finish(&state.scan, error);
+        if automatic && state.settings.lock().unwrap().notifications {
+            notify::send_for(&events).await;
+        }
     });
     Ok(())
 }
 
+/// When the next automatic scan is due, if they're on.
+fn next_scan_due(state: &AppState, cur: &Current, settings: &Settings) -> Option<DateTime<Utc>> {
+    if settings.auto_scan_minutes == 0 {
+        return None;
+    }
+    let last_scan = cur.inv.last_report.as_ref().map(|r| r.finished_at);
+    let last_attempt = state.scan.lock().unwrap().finished_at;
+    let last = last_scan.max(last_attempt)?;
+    Some(last + chrono::Duration::minutes(i64::from(settings.auto_scan_minutes)))
+}
+
+/// Runs automatic scans on schedule for as long as the server is up.
+async fn auto_scan_loop(state: Shared) {
+    loop {
+        tokio::time::sleep(Duration::from_secs(20)).await;
+        let settings = state.settings.lock().unwrap().clone();
+        if settings.auto_scan_minutes == 0 {
+            continue;
+        }
+        let due = {
+            let cur = current(&state);
+            next_scan_due(&state, &cur, &settings).is_none_or(|at| at <= Utc::now())
+        };
+        if due {
+            let _ = spawn_scan(state.clone(), true);
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct SettingsUpdate {
+    auto_scan_minutes: Option<u32>,
+    notifications: Option<bool>,
+}
+
+async fn update_settings(State(state): State<Shared>, Json(update): Json<SettingsUpdate>) -> ApiResult<Json<Settings>> {
+    let mut s = state.settings.lock().unwrap();
+    if let Some(m) = update.auto_scan_minutes {
+        s.auto_scan_minutes = m.min(24 * 60);
+    }
+    if let Some(n) = update.notifications {
+        s.notifications = n;
+    }
+    s.save(state.workspace.root())?;
+    Ok(Json(s.clone()))
+}
+
+async fn test_notification() -> ApiResult<StatusCode> {
+    notify::send("NattoWok notifications are on", "You'll hear about new devices and security issues here.")
+        .await
+        .map_err(|e| ApiError(StatusCode::SERVICE_UNAVAILABLE, format!("{e:#}")))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 async fn start_scan(State(state): State<Shared>) -> ApiResult<StatusCode> {
-    spawn_scan(state)?;
+    spawn_scan(state, false)?;
     Ok(StatusCode::ACCEPTED)
 }
 
@@ -220,24 +330,24 @@ async fn update_device(
     Path(id): Path<String>,
     Json(update): Json<DeviceUpdate>,
 ) -> ApiResult<StatusCode> {
-    let mut cur = state.current.lock().unwrap();
+    let mut cur = current(&state);
     cur.inv.update(&id, update).ok_or_else(|| not_found("device"))?;
-    state.workspace.save(&cur.key, &cur.inv)?;
+    cur.save(&state.workspace)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 async fn forget_device(State(state): State<Shared>, Path(id): Path<String>) -> ApiResult<StatusCode> {
-    let mut cur = state.current.lock().unwrap();
+    let mut cur = current(&state);
     if !cur.inv.forget(&id) {
         return Err(not_found("device"));
     }
-    state.workspace.save(&cur.key, &cur.inv)?;
+    cur.save(&state.workspace)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 async fn wake_device(State(state): State<Shared>, Path(id): Path<String>) -> ApiResult<Json<serde_json::Value>> {
     let (mac, broadcast) = {
-        let cur = state.current.lock().unwrap();
+        let cur = current(&state);
         let inv = &cur.inv;
         let known = inv.devices.get(&id).ok_or_else(|| not_found("device"))?;
         let mac = known
@@ -255,13 +365,13 @@ async fn wake_device(State(state): State<Shared>, Path(id): Path<String>) -> Api
 
 async fn deep_scan(State(state): State<Shared>, Path(id): Path<String>) -> ApiResult<Json<Vec<OpenPort>>> {
     let ip = {
-        let cur = state.current.lock().unwrap();
+        let cur = current(&state);
         cur.inv.devices.get(&id).ok_or_else(|| not_found("device"))?.snapshot.ip
     };
     let limit = Arc::new(tokio::sync::Semaphore::new(256));
     let open = probe::scan_ports(ip, &probe::deep_ports(), std::time::Duration::from_millis(800), limit).await;
     let described = probe::describe_ports(ip, &open).await;
-    let mut cur = state.current.lock().unwrap();
+    let mut cur = current(&state);
     let inv = &mut cur.inv;
     if let Some(report) = inv.last_report.as_mut()
         && let Some(d) = report.devices.iter_mut().find(|d| d.id == id)
@@ -272,7 +382,7 @@ async fn deep_scan(State(state): State<Shared>, Path(id): Path<String>) -> ApiRe
     if let Some(k) = inv.devices.get_mut(&id) {
         k.snapshot.open_ports = described.clone();
     }
-    state.workspace.save(&cur.key, &cur.inv)?;
+    cur.save(&state.workspace)?;
     Ok(Json(described))
 }
 
@@ -287,9 +397,9 @@ async fn merge_devices(
     Path(id): Path<String>,
     Json(body): Json<OtherDevice>,
 ) -> ApiResult<Json<serde_json::Value>> {
-    let mut cur = state.current.lock().unwrap();
+    let mut cur = current(&state);
     let name = cur.inv.merge(&id, &body.other).map_err(|e| ApiError(StatusCode::BAD_REQUEST, format!("{e:#}")))?;
-    state.workspace.save(&cur.key, &cur.inv)?;
+    cur.save(&state.workspace)?;
     Ok(Json(json!({ "name": name })))
 }
 
@@ -298,16 +408,16 @@ async fn not_same(
     Path(id): Path<String>,
     Json(body): Json<OtherDevice>,
 ) -> ApiResult<StatusCode> {
-    let mut cur = state.current.lock().unwrap();
+    let mut cur = current(&state);
     cur.inv.mark_not_same(&id, &body.other);
-    state.workspace.save(&cur.key, &cur.inv)?;
+    cur.save(&state.workspace)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 /// Live mode: is each known device answering right now?
 async fn presence(State(state): State<Shared>) -> Json<serde_json::Value> {
     let targets: Vec<(String, std::net::Ipv4Addr, Vec<u16>)> = {
-        let cur = state.current.lock().unwrap();
+        let cur = current(&state);
         cur.inv
             .current_view()
             .map(|r| {
@@ -326,28 +436,28 @@ async fn presence(State(state): State<Shared>) -> Json<serde_json::Value> {
 }
 
 async fn trust_all(State(state): State<Shared>) -> ApiResult<Json<serde_json::Value>> {
-    let mut cur = state.current.lock().unwrap();
+    let mut cur = current(&state);
     let n = cur.inv.trust_all_online();
-    state.workspace.save(&cur.key, &cur.inv)?;
+    cur.save(&state.workspace)?;
     Ok(Json(json!({ "trusted": n })))
 }
 
 async fn ignore_finding(State(state): State<Shared>, Path(id): Path<String>) -> ApiResult<StatusCode> {
-    let mut cur = state.current.lock().unwrap();
+    let mut cur = current(&state);
     cur.inv.ignored_findings.insert(id);
-    state.workspace.save(&cur.key, &cur.inv)?;
+    cur.save(&state.workspace)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 async fn unignore_finding(State(state): State<Shared>, Path(id): Path<String>) -> ApiResult<StatusCode> {
-    let mut cur = state.current.lock().unwrap();
+    let mut cur = current(&state);
     cur.inv.ignored_findings.remove(&id);
-    state.workspace.save(&cur.key, &cur.inv)?;
+    cur.save(&state.workspace)?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 async fn export(State(state): State<Shared>, Path(format): Path<String>) -> ApiResult<Response> {
-    let cur = state.current.lock().unwrap();
+    let cur = current(&state);
     let report = cur.inv.current_view().ok_or_else(|| ApiError(StatusCode::NOT_FOUND, "run a scan first".into()))?;
     let stamp = report.finished_at.format("%Y%m%d-%H%M");
     let (body, mime, ext) = match format.as_str() {
@@ -378,6 +488,8 @@ pub fn router(state: Shared) -> Router {
         .route("/api/presence", get(presence))
         .route("/api/findings/{id}/ignore", post(ignore_finding).delete(unignore_finding))
         .route("/api/export/{format}", get(export))
+        .route("/api/settings", patch(update_settings))
+        .route("/api/notify-test", post(test_notification))
         .layer(middleware::from_fn_with_state(state.clone(), guard))
         .with_state(state)
 }
@@ -388,30 +500,53 @@ pub struct ServeOptions {
     pub scan_on_start: bool,
     pub scan_opts: ScanOptions,
     pub data_dir: PathBuf,
+    pub service_mode: bool,
+}
+
+/// Whether a NattoWok dashboard is already answering at `addr`.
+async fn already_running(addr: SocketAddr) -> bool {
+    let probe_addr = if addr.ip().is_unspecified() { SocketAddr::from(([127, 0, 0, 1], addr.port())) } else { addr };
+    crate::http::get(probe_addr, &format!("localhost:{}", addr.port()), "/", Duration::from_secs(2))
+        .await
+        .is_ok_and(|r| r.body.contains("nattowok-token"))
 }
 
 pub async fn serve(opts: ServeOptions) -> Result<()> {
     let workspace = Workspace::new(opts.data_dir);
     let (key, inventory) = workspace.load_current(opts.scan_opts.interface.as_deref())?;
+    let settings = Settings::load(workspace.root());
+    let current = Current::new(&workspace, key, inventory.clone());
     let remote = !opts.listen.ip().is_loopback();
     let token = random_token();
     let has_report = inventory.last_report.is_some();
     let state = Arc::new(AppState {
         workspace,
-        current: Mutex::new(Current { key, inv: inventory }),
+        current: Mutex::new(current),
         scan: Arc::default(),
         doctor: Arc::default(),
         diagnosis: Mutex::new(None),
         scan_opts: opts.scan_opts,
+        settings: Mutex::new(settings),
+        service_mode: opts.service_mode,
         token: token.clone(),
         remote,
     });
-    let listener = tokio::net::TcpListener::bind(opts.listen).await.map_err(|e| {
-        anyhow::anyhow!(
-            "couldn't listen on {}: {e}. Is NattoWok already running? Try --listen 127.0.0.1:0",
+    let listener = match tokio::net::TcpListener::bind(opts.listen).await {
+        Ok(l) => l,
+        // Most likely the background service: just open that one.
+        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse && already_running(opts.listen).await => {
+            let url = format!("http://localhost:{}/", opts.listen.port());
+            println!("NattoWok is already running (probably in the background): {url}");
+            if opts.open_browser {
+                open_browser(&url);
+            }
+            return Ok(());
+        }
+        Err(e) => anyhow::bail!(
+            "couldn't listen on {}: {e}. Another program is using that port; try --listen 127.0.0.1:0",
             opts.listen
-        )
-    })?;
+        ),
+    };
     let addr = listener.local_addr()?;
     let url = if remote { format!("http://{addr}/?key={token}") } else { format!("http://localhost:{}/", addr.port()) };
     println!("NattoWok dashboard: {url}");
@@ -424,8 +559,9 @@ pub async fn serve(opts: ServeOptions) -> Result<()> {
         open_browser(&url);
     }
     if opts.scan_on_start || !has_report {
-        let _ = spawn_scan(state.clone());
+        let _ = spawn_scan(state.clone(), opts.service_mode);
     }
+    tokio::spawn(auto_scan_loop(state.clone()));
     axum::serve(listener, router(state))
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
@@ -457,7 +593,9 @@ mod tests {
     fn test_state() -> Shared {
         Arc::new(AppState {
             workspace: Workspace::new(std::env::temp_dir().join(format!("nattowok-web-{}", std::process::id()))),
-            current: Mutex::new(Current { key: "test".into(), inv: Inventory::default() }),
+            current: Mutex::new(Current { key: "test".into(), inv: Inventory::default(), mtime: None }),
+            settings: Mutex::new(Settings::default()),
+            service_mode: false,
             scan: Arc::default(),
             doctor: Arc::default(),
             diagnosis: Mutex::new(None),

@@ -22,6 +22,8 @@ NattoWok is a network scanner in the spirit of Fing. It's built around a differe
 | Needing an account or a phone app | Runs entirely on your computer. Nothing is uploaded anywhere. |
 | Needing root/admin | Discovery works **without root**: TCP probing (a refused connection proves a host is alive), the OS neighbor table, mDNS/Bonjour, UPnP/SSDP and NetBIOS. |
 | Explaining your network to whoever helps you with tech | **Export a report** (Markdown) to send them, a CSV for spreadsheets, or JSON for scripts. |
+| Not knowing what's reachable from the internet | NattoWok asks your router which ports apps and devices **opened to the internet** (UPnP), and rates each one: remote desktop and databases are serious, game and voice-chat ports are normal. It also spots when your provider shares your public address, so forwards can't actually be reached. |
+| Only finding out about a new device when you happen to look | `nattowok service install` keeps NattoWok running in the background (starting at log-in), **scanning on a schedule and sending desktop notifications** for new devices and security issues. No admin rights needed. |
 | Wanting automation | `nattowok watch --on-new-device "…"` runs your command when something joins (send a notification, log it, turn on a light). |
 
 ### Devices explain themselves
@@ -84,7 +86,19 @@ Every device can be named, unknown ones included. Names are tied to the device's
 
 Live mode can only follow devices that answer quick checks. The rare device that ignores everything shows *"not answering"* from the start; for those, run a scan before and after unplugging and look at what went offline.
 
-### Get notified about new devices
+### Keep watching in the background
+
+```sh
+nattowok service install            # scan every 15 min, notify about new devices and issues
+nattowok service install --every 60 --no-notifications
+nattowok service status
+nattowok service test-notification
+nattowok service uninstall
+```
+
+This installs a per-user service (a systemd user unit on Linux, a LaunchAgent on macOS, a log-on task on Windows) that runs the dashboard and scans on schedule. Opening `nattowok` afterwards just opens the running dashboard. The interval and notifications can also be changed from the bell menu in the dashboard. Notifications use what your OS already has: `notify-send` on Linux, Notification Center on macOS, toast notifications on Windows.
+
+### Run your own command on changes
 
 ```sh
 nattowok watch --interval 300 \
@@ -111,6 +125,7 @@ Data lives in your OS data folder (`~/.local/share/nattowok`, `~/Library/Applica
 - **Local only.** The only traffic leaving your network comes from the Internet doctor: a few TCP connects and DNS queries to Cloudflare, Google and Quad9, plus Google's standard connectivity check. And only when you run it.
 - **The dashboard listens on localhost by default.** Every API call needs a random per-run token embedded in the page, which other websites can't read. Requests whose `Host` isn't localhost are refused, which blocks DNS-rebinding attacks. `--listen 0.0.0.0:7878` exposes it on purpose; access then requires a key printed in the terminal.
 - **Polite scanning.** NattoWok only connects. It never logs in, never tries passwords, and only follows UPnP description URLs that point back at the device that announced them.
+- **Router exposure is read-only.** NattoWok asks the router for its port-forwarding list; it never adds or removes mappings.
 - Only scan networks you own or are allowed to scan.
 
 ## Limitations
@@ -140,6 +155,8 @@ Layout:
 | `src/store.rs` | Per-network inventory, change tracking, merging |
 | `src/matching.rs` | Recognising devices that return under a new hardware address |
 | `src/doctor.rs` | Internet doctor |
+| `src/upnp.rs` | Router port-forwarding (exposure) queries |
+| `src/notify.rs`, `src/service.rs`, `src/settings.rs` | Desktop notifications, background service, preferences |
 | `src/web.rs`, `web/` | Dashboard server and UI (embedded at compile time) |
 | `src/main.rs` | CLI |
 

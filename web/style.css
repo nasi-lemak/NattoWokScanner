@@ -294,6 +294,16 @@ textarea { min-height: 70px; resize: vertical; }
 .panel p { margin: 6px 0; }
 .panel a { cursor: pointer; }
 
+.settings-panel { width: 320px; padding: 14px; display: grid; gap: 10px; font-size: 14px; }
+.settings-panel h4 { margin: 0; font-size: 13px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.settings-panel select { padding: 7px 9px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
+.settings-panel .switch { font-weight: 500; align-items: flex-start; }
+.settings-panel .btn { justify-self: start; }
+.hint { color: var(--muted); font-size: 13px; margin: 0; }
+.hint code { font-size: 12px; background: var(--surface-2); padding: 1px 5px; border-radius: 4px; }
+#settings-btn { position: relative; }
+.dot-on { position: absolute; top: 6px; right: 6px; width: 8px; height: 8px; border-radius: 50%; background: var(--good); }
+
 /* Live mode */
 .live-chip { display: inline-flex; align-items: center; gap: 6px; }
 .live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }

@@ -26,6 +26,24 @@
         <a data-export="json">Raw data (.json)</a>
       </div>
     </div>
+    <div class="menu">
+      <button class="btn ghost icon-only" id="settings-btn" aria-label="Watching and notifications" aria-haspopup="true" aria-expanded="false" title="Watching and notifications"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg><span class="dot-on" id="settings-dot" hidden></span></button>
+      <div class="menu-list settings-panel" id="settings-menu" hidden>
+        <h4>Keep watching</h4>
+        <label for="set-auto">Scan automatically</label>
+        <select id="set-auto">
+          <option value="0">Off</option>
+          <option value="5">Every 5 minutes</option>
+          <option value="15">Every 15 minutes</option>
+          <option value="30">Every 30 minutes</option>
+          <option value="60">Every hour</option>
+          <option value="360">Every 6 hours</option>
+        </select>
+        <label class="switch"><input type="checkbox" id="set-notify"> Desktop notifications for new devices and security issues</label>
+        <button class="btn small" id="set-test">Send a test notification</button>
+        <p class="hint" id="set-bg"></p>
+      </div>
+    </div>
     <button class="btn ghost icon-only" id="theme-btn" aria-label="Switch light or dark theme" title="Theme"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 0 0 16z" fill="currentColor"/></svg></button>
     <button class="btn primary" id="scan-btn"><span class="scan-label">Scan network</span></button>
   </div>
