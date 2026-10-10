@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="nattowok-token" content="__NATTOWOK_TOKEN__">
+<title>NattoWok Scanner</title>
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <img src="/icon.svg" alt="" width="28" height="28">
+    <div>
+      <strong>NattoWok</strong>
+      <span class="net" id="net-label">Your network</span>
+    </div>
+  </div>
+  <div class="top-actions">
+    <div class="menu">
+      <button class="btn ghost" id="export-btn" aria-haspopup="true" aria-expanded="false">Export</button>
+      <div class="menu-list" id="export-menu" hidden>
+        <a data-export="md">Report for tech support (.md)</a>
+        <a data-export="csv">Spreadsheet (.csv)</a>
+        <a data-export="json">Raw data (.json)</a>
+      </div>
+    </div>
+    <button class="btn ghost icon-only" id="theme-btn" aria-label="Switch light or dark theme" title="Theme"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 0 0 16z" fill="currentColor"/></svg></button>
+    <button class="btn primary" id="scan-btn"><span class="scan-label">Scan network</span></button>
+  </div>
+</header>
+<div class="progress" id="progress" hidden>
+  <div class="progress-bar"><div id="progress-fill"></div></div>
+  <span id="progress-text">Starting…</span>
+</div>
+
+<nav class="tabs" role="tablist">
+  <button role="tab" data-tab="devices" aria-selected="true">Devices <span class="count" id="tab-devices-count"></span></button>
+  <button role="tab" data-tab="security" aria-selected="false">Security <span class="count" id="tab-security-count"></span></button>
+  <button role="tab" data-tab="doctor" aria-selected="false">Internet doctor</button>
+  <button role="tab" data-tab="timeline" aria-selected="false">What changed <span class="count" id="tab-timeline-count"></span></button>
+</nav>
+
+<main>
+  <section id="tab-devices" class="tab-panel">
+    <div class="stats" id="stats"></div>
+    <div class="notes" id="notes"></div>
+    <div class="toolbar">
+      <input type="search" id="search" placeholder="Search name, IP, vendor, MAC…  ( / )" aria-label="Search devices">
+      <div class="chips" id="filters" role="group" aria-label="Filter devices">
+        <button data-filter="all" class="chip active">All</button>
+        <button data-filter="online" class="chip">Online</button>
+        <button data-filter="new" class="chip">New</button>
+        <button data-filter="unreviewed" class="chip">Not reviewed</button>
+        <button data-filter="issues" class="chip">Has issues</button>
+        <button data-filter="offline" class="chip">Offline</button>
+      </div>
+      <select id="sort" aria-label="Sort devices">
+        <option value="ip">Sort: address</option>
+        <option value="name">Sort: name</option>
+        <option value="kind">Sort: type</option>
+        <option value="seen">Sort: last seen</option>
+      </select>
+    </div>
+    <div id="review-banner" class="banner" hidden></div>
+    <div id="device-list" class="device-list"></div>
+  </section>
+
+  <section id="tab-security" class="tab-panel" hidden></section>
+  <section id="tab-doctor" class="tab-panel" hidden></section>
+  <section id="tab-timeline" class="tab-panel" hidden></section>
+</main>
+
+<aside class="drawer" id="drawer" aria-hidden="true" tabindex="-1">
+  <div class="drawer-inner" id="drawer-body"></div>
+</aside>
+<div class="scrim" id="scrim" hidden></div>
+<div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+<footer>NattoWok Scanner __VERSION__ · Everything stays on this computer. No account, no cloud.</footer>
+<script src="/app.js"></script>
+</body>
+</html>
