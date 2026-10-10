@@ -2,6 +2,7 @@
 //! to do, and has a stable id so people can dismiss it.
 
 use crate::model::{Device, DeviceKind, Finding, NetworkInfo, PortMapping, RouterExposure, Severity};
+use crate::wifi::{SecurityRisk, WifiInfo};
 
 fn finding(
     id: String,
@@ -167,6 +168,7 @@ pub fn network_findings(
     info: &NetworkInfo,
     devices: &[Device],
     exposure: Option<&RouterExposure>,
+    wifi: Option<&WifiInfo>,
     previous_gateway_mac: Option<&str>,
 ) -> Vec<Finding> {
     let mut out = Vec::new();
@@ -217,6 +219,9 @@ pub fn network_findings(
 
     if let Some(exp) = exposure {
         out.extend(exposure_findings(exp, devices));
+    }
+    if let Some(f) = wifi.and_then(wifi_finding) {
+        out.push(f);
     }
 
     let unreviewed = devices.iter().filter(|d| !d.trusted && !d.is_self && !d.is_gateway).count();
@@ -291,6 +296,32 @@ fn mapping_finding(m: &PortMapping, devices: &[Device], shared_address: bool) ->
     }
 }
 
+fn wifi_finding(w: &WifiInfo) -> Option<Finding> {
+    let name =
+        w.ssid.as_deref().map_or_else(|| "This Wi-Fi network".to_string(), |s| format!("The Wi-Fi network \"{s}\""));
+    let key = w.ssid.clone().unwrap_or_default();
+    Some(match w.security_risk()? {
+        SecurityRisk::Open => Finding {
+            id: format!("wifi-open:{key}"),
+            severity: Severity::High,
+            title: format!("{name} has no password"),
+            explanation: "Anyone nearby can join it, reach your devices, and read any traffic that isn't separately encrypted.".into(),
+            fix: "If it's your network, turn on WPA2 or WPA3 (\"WPA2-Personal\", \"WPA3-Personal\") in the router's Wi-Fi settings and set a long password. If it's a café or hotel, use a VPN and avoid sharing files.".into(),
+            device_id: None,
+            ignored: false,
+        },
+        SecurityRisk::Outdated => Finding {
+            id: format!("wifi-outdated:{key}"),
+            severity: Severity::High,
+            title: format!("{name} uses outdated security"),
+            explanation: "WEP and WPA1 (TKIP) can be cracked in minutes with free tools, giving outsiders the same access as your own devices.".into(),
+            fix: "In the router's Wi-Fi settings, switch security to WPA2-Personal (AES) or WPA3-Personal. Very old devices that can't connect afterwards are worth replacing.".into(),
+            device_id: None,
+            ignored: false,
+        },
+    })
+}
+
 pub fn exposure_findings(exp: &RouterExposure, devices: &[Device]) -> Vec<Finding> {
     exp.mappings.iter().filter(|m| m.enabled).map(|m| mapping_finding(m, devices, exp.shared_address)).collect()
 }
@@ -356,9 +387,9 @@ mod tests {
         gw.trusted = true;
         let mut evil = dev(66, "00:11:22:33:44:55");
         evil.trusted = true;
-        let f = network_findings(&info, &[gw.clone(), evil], None, None);
+        let f = network_findings(&info, &[gw.clone(), evil], None, None, None);
         assert!(f.iter().any(|f| f.id.starts_with("arp-spoof") && f.severity == Severity::High));
-        let f = network_findings(&info, &[gw], None, Some("AA:AA:AA:AA:AA:AA"));
+        let f = network_findings(&info, &[gw], None, None, Some("AA:AA:AA:AA:AA:AA"));
         assert!(f.iter().any(|f| f.id.starts_with("gateway-changed")));
     }
 
@@ -394,6 +425,16 @@ mod tests {
         exp.shared_address = true;
         let f = exposure_findings(&exp, &[cam]);
         assert!(f.iter().all(|f| f.severity <= Severity::Low));
+    }
+
+    #[test]
+    fn flags_weak_wifi_security() {
+        let w = |sec: &str| WifiInfo { ssid: Some("Home".into()), security: Some(sec.into()), ..Default::default() };
+        assert_eq!(wifi_finding(&w("WPA2")), None);
+        let f = wifi_finding(&w("WEP")).unwrap();
+        assert_eq!(f.id, "wifi-outdated:Home");
+        assert_eq!(f.title, "The Wi-Fi network \"Home\" uses outdated security");
+        assert_eq!(wifi_finding(&w("--")).unwrap().severity, Severity::High);
     }
 
     #[test]

@@ -124,8 +124,10 @@ pub async fn run(opts: &ScanOptions, progress: Progress) -> Result<ScanReport> {
         });
     }
     let listen = Duration::from_secs(3);
-    let (alive, mdns_hosts, ssdp_hosts) =
-        tokio::join!(knocks.join_all(), mdns::discover(info.ip, listen), ssdp::discover(info.ip, listen),);
+    let wireless = info.wireless;
+    let wifi_read = async { if wireless { crate::wifi::read().await } else { None } };
+    let (alive, mdns_hosts, ssdp_hosts, wifi) =
+        tokio::join!(knocks.join_all(), mdns::discover(info.ip, listen), ssdp::discover(info.ip, listen), wifi_read);
     let mut latency: HashMap<Ipv4Addr, f64> = alive.into_iter().flatten().collect();
 
     // Phase 2: the ARP table now also knows silent devices we poked.
@@ -280,6 +282,7 @@ pub async fn run(opts: &ScanOptions, progress: Progress) -> Result<ScanReport> {
         health_score: 100,
         notes,
         exposure,
+        wifi,
     })
 }
 

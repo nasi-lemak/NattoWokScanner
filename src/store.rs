@@ -411,6 +411,7 @@ impl Inventory {
             &report.network,
             &report.devices,
             report.exposure.as_ref(),
+            report.wifi.as_ref(),
             self.previous_router.as_deref(),
         );
         let previously_seen: BTreeSet<String> =
@@ -456,6 +457,7 @@ impl Inventory {
             &report.network,
             &report.devices,
             report.exposure.as_ref(),
+            report.wifi.as_ref(),
             self.previous_router.as_deref(),
         );
         self.mark_ignored(&mut report);
@@ -725,6 +727,7 @@ mod tests {
             health_score: 100,
             notes: vec![],
             exposure: None,
+            wifi: None,
         }
     }
 

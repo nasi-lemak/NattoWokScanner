@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::model::NetworkInfo;
 use crate::probe::{self, TcpState};
 use crate::scan::Progress;
+use crate::wifi::{self, Quality, SecurityRisk, WifiInfo};
 use crate::{dns, http, netinfo};
 
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -99,6 +100,8 @@ pub struct Diagnosis {
     pub dns: Vec<DnsResult>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub network: Option<NetworkInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wifi: Option<WifiInfo>,
 }
 
 const PUBLIC_DNS: &[(Ipv4Addr, &str)] = &[
@@ -293,7 +296,10 @@ pub async fn run(interface: Option<&str>, progress: Progress) -> Result<Diagnosi
         let (median_ms, failures, queries) = bench_dns(*ip).await;
         DnsResult { server: *ip, label: label.clone(), configured: *configured, median_ms, failures, queries }
     }));
-    let (router, internet, dns_results, portal) = tokio::join!(router, internet, dns_bench, captive_portal());
+    let wireless = info.wireless;
+    let wifi_read = async { if wireless { wifi::read().await } else { None } };
+    let (router, internet, dns_results, portal, wifi_info) =
+        tokio::join!(router, internet, dns_bench, captive_portal(), wifi_read);
     progress("Putting it together", 0.95);
 
     // Router verdict.
@@ -331,6 +337,9 @@ pub async fn run(interface: Option<&str>, progress: Progress) -> Result<Diagnosi
         }
     }
     let router_avg = router.as_ref().filter(|l| l.received > 0).map(|l| l.avg_ms);
+    if let Some(w) = &wifi_info {
+        checks.push(wifi_check(w, matches!(rc.status, Status::Warn | Status::Fail)));
+    }
     checks.push(rc);
 
     // Internet verdict: use the best-performing target.
@@ -440,7 +449,99 @@ pub async fn run(interface: Option<&str>, progress: Progress) -> Result<Diagnosi
     }
     checks.push(dc);
 
-    Ok(conclude(checks, dns_results, Some(info)))
+    let mut diagnosis = conclude(checks, dns_results, Some(info));
+    diagnosis.wifi = wifi_info;
+    Ok(diagnosis)
+}
+
+/// Judges the Wi-Fi link. Crowding and a so-so signal only count as the
+/// problem when the router connection is actually struggling.
+pub fn wifi_check(w: &WifiInfo, router_trouble: bool) -> Check {
+    let quality = w.quality();
+    let crowd = w.crowding();
+    let crowded = if w.is_2ghz() { crowd >= 5 } else { crowd >= 3 };
+
+    let mut detail = match &w.ssid {
+        Some(ssid) => format!("Connected to \"{ssid}\""),
+        None => "Connected".to_string(),
+    };
+    if let Some(c) = w.channel {
+        detail.push_str(&format!(" on channel {c}"));
+        if let Some(b) = &w.band {
+            detail.push_str(&format!(" ({b})"));
+        }
+    }
+    if let Some(q) = quality {
+        let reading = match (w.rssi_dbm, w.signal_percent) {
+            (Some(dbm), _) => format!("{dbm} dBm"),
+            (None, Some(p)) => format!("{p}%"),
+            _ => String::new(),
+        };
+        detail.push_str(&format!(", signal {} ({reading})", q.label()));
+    }
+    if let Some(r) = w.rate_mbps {
+        detail.push_str(&format!(", link speed {r} Mbps"));
+    }
+    detail.push('.');
+    if crowd > 0 {
+        detail.push_str(&format!(
+            " {crowd} other network{} nearby use{} the same or an overlapping channel.",
+            if crowd == 1 { "" } else { "s" },
+            if crowd == 1 { "s" } else { "" }
+        ));
+    }
+
+    let channel_tip = match w.best_2ghz_channel() {
+        Some((best, busy)) if Some(best) != w.channel => format!(
+            "In your router's Wi-Fi settings, switch the 2.4 GHz channel to {best} (only {busy} nearby network{} use{} it), or connect to the router's 5 GHz network, which has far more room.",
+            if busy == 1 { "" } else { "s" },
+            if busy == 1 { "s" } else { "" }
+        ),
+        Some(_) => {
+            "Connect to your router's 5 GHz network if it has one; it has far more room than 2.4 GHz.".to_string()
+        }
+        None => {
+            "Set your router's 5 GHz channel to Auto, or pick a different one, so it moves away from the neighbours."
+                .to_string()
+        }
+    };
+
+    let (status, title, mut advice) = match quality {
+        Some(Quality::Weak) => (
+            Status::Warn,
+            "Your Wi-Fi signal is weak".to_string(),
+            Some(if w.is_2ghz() {
+                "Move closer to the router or put fewer walls between you. If this spot matters (a desk, the TV), a mesh point or a cable fixes it for good.".to_string()
+            } else {
+                "5 GHz is fast but doesn't reach far. Move closer to the router, or try the 2.4 GHz network here, which reaches further. A mesh point fixes weak spots for good.".to_string()
+            }),
+        ),
+        _ if crowded && router_trouble => (Status::Warn, "Your Wi-Fi channel is crowded".to_string(), Some(channel_tip)),
+        Some(Quality::Fair) if router_trouble => (
+            Status::Warn,
+            "Your Wi-Fi signal could be stronger".to_string(),
+            Some("Moving closer to the router, or raising it off the floor and away from metal and fish tanks, usually helps.".to_string()),
+        ),
+        _ => (Status::Pass, "Wi-Fi signal".to_string(), crowded.then(|| format!("Tip: the airwaves are busy here. {channel_tip}"))),
+    };
+
+    // Security doesn't slow you down, so it never decides the verdict, but say it.
+    let security_note = match w.security_risk() {
+        Some(SecurityRisk::Open) => Some(
+            "This Wi-Fi has no password: anyone nearby can join and watch unencrypted traffic. On your own network, turn on WPA2 or WPA3 in the router; elsewhere, use a VPN.",
+        ),
+        Some(SecurityRisk::Outdated) => Some(
+            "This Wi-Fi uses outdated security (WEP or WPA1) that can be cracked in minutes. Switch the router to WPA2 or WPA3.",
+        ),
+        None => None,
+    };
+    if let Some(note) = security_note {
+        advice = Some(match advice {
+            Some(a) => format!("{a} {note}"),
+            None => note.to_string(),
+        });
+    }
+    Check { id: "wifi".into(), layer: "Wi-Fi".into(), title, status, detail, advice, latency: None }
 }
 
 fn wifi_advice(wireless: bool) -> String {
@@ -465,6 +566,7 @@ fn conclude(checks: Vec<Check>, dns: Vec<DnsResult>, network: Option<NetworkInfo
         ),
         Some(c) => {
             let headline = match (c.id.as_str(), c.status) {
+                ("wifi", _) => c.title.as_str(),
                 ("local", _) => "This computer isn't properly connected",
                 ("router", Status::Fail) => "The connection to your router is failing",
                 ("router", _) => "Your Wi-Fi or local network is the weak spot",
@@ -478,7 +580,7 @@ fn conclude(checks: Vec<Check>, dns: Vec<DnsResult>, network: Option<NetworkInfo
             (headline.to_string(), c.advice.clone().unwrap_or_else(|| c.detail.clone()))
         }
     };
-    Diagnosis { at: Utc::now(), status: worst, headline, summary, checks, dns, network }
+    Diagnosis { at: Utc::now(), status: worst, headline, summary, checks, dns, network, wifi: None }
 }
 
 #[cfg(test)]
@@ -509,6 +611,43 @@ mod tests {
             advice: Some(format!("fix {id}")),
             latency: None,
         }
+    }
+
+    #[test]
+    fn judges_wifi() {
+        let base = WifiInfo {
+            ssid: Some("Home".into()),
+            rssi_dbm: Some(-58),
+            channel: Some(6),
+            band: Some("2.4 GHz".into()),
+            security: Some("WPA2".into()),
+            ..Default::default()
+        };
+        assert_eq!(wifi_check(&base, false).status, Status::Pass);
+
+        let weak = WifiInfo { rssi_dbm: Some(-80), ..base.clone() };
+        let c = wifi_check(&weak, false);
+        assert_eq!(c.status, Status::Warn);
+        assert_eq!(c.title, "Your Wi-Fi signal is weak");
+
+        let neighbours =
+            (0..6).map(|i| wifi::Neighbor { ssid: Some(format!("n{i}")), channel: 6, signal_percent: None });
+        let mut busy = WifiInfo { neighbors: neighbours.collect(), ..base.clone() };
+        busy.neighbors.push(wifi::Neighbor { ssid: Some("far".into()), channel: 1, signal_percent: None });
+        // Crowded but working fine: just a tip.
+        let c = wifi_check(&busy, false);
+        assert_eq!(c.status, Status::Pass);
+        assert!(c.advice.as_deref().unwrap().contains("channel to 11"));
+        // Crowded and the router link is struggling: that's the culprit.
+        let c = wifi_check(&busy, true);
+        assert_eq!(c.status, Status::Warn);
+        let d = conclude(vec![check("local", Status::Pass), c, check("router", Status::Warn)], vec![], None);
+        assert_eq!(d.headline, "Your Wi-Fi channel is crowded");
+
+        let open = WifiInfo { security: Some("--".into()), ..base };
+        let c = wifi_check(&open, false);
+        assert_eq!(c.status, Status::Pass, "security never decides the speed verdict");
+        assert!(c.advice.unwrap().contains("no password"));
     }
 
     #[test]

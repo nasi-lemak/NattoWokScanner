@@ -23,4 +23,5 @@ pub mod ssdp;
 pub mod store;
 pub mod upnp;
 pub mod web;
+pub mod wifi;
 pub mod wol;

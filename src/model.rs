@@ -349,6 +349,8 @@ pub struct ScanReport {
     /// `None` when the router doesn't answer UPnP queries.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exposure: Option<RouterExposure>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wifi: Option<crate::wifi::WifiInfo>,
 }
 
 impl ScanReport {

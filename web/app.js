@@ -101,6 +101,7 @@ const ICONS = {
   virtual_machine: '<rect x="3" y="3" width="13" height="13" rx="2" stroke-dasharray="2 2"/><rect x="8" y="8" width="13" height="13" rx="2"/>',
   unknown: '<circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.7.3-1 .9-1 1.7M12 17h.01"/>',
   globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/>',
+  wifi: '<path d="M5 12.5a10 10 0 0 1 14 0M8.5 16a5 5 0 0 1 7 0M2 9a15 15 0 0 1 20 0"/><path d="M12 19.5h.01"/>',
   book: '<path d="M4 4h6a2 2 0 0 1 2 2v14a2 2 0 0 0-2-2H4zM20 4h-6a2 2 0 0 0-2 2v14a2 2 0 0 1 2-2h6z"/>',
 };
 
@@ -443,6 +444,7 @@ function renderSecurity(report) {
 
 const HOPS = [
   { id: "local", label: "This computer", icon: "computer" },
+  { id: "wifi", label: "Wi-Fi", icon: "wifi" },
   { id: "router", label: "Router", icon: "router" },
   { id: "internet", label: "Internet", icon: "globe" },
   { id: "dns", label: "DNS", icon: "book" },
@@ -461,9 +463,14 @@ function renderDoctor(d) {
     return;
   }
   const byId = Object.fromEntries(diag.checks.map((c) => [c.id, c]));
-  const chain = HOPS.map((h) => {
+  const hops = HOPS.filter((h) => h.id !== "wifi" || byId.wifi);
+  const configuredDns = diag.dns.find((x) => x.configured)?.median_ms;
+  const wifiReading = diag.wifi ? (diag.wifi.rssi_dbm != null ? `${diag.wifi.rssi_dbm} dBm` : diag.wifi.signal_percent != null ? `${diag.wifi.signal_percent}%` : "") : "";
+  const chain = hops.map((h) => {
     const c = byId[h.id];
-    const ms = c?.latency?.received ? `${c.latency.avg_ms} ms` : h.id === "dns" ? (diag.dns.find((x) => x.configured)?.median_ms ?? "") + (diag.dns.find((x) => x.configured)?.median_ms != null ? " ms" : "") : "";
+    const ms = c?.latency?.received ? `${c.latency.avg_ms} ms`
+      : h.id === "dns" && configuredDns != null ? `${configuredDns} ms`
+      : h.id === "wifi" ? wifiReading : "";
     return `<div class="hop ${c ? c.status : ""}"><div class="dot">${icon(h.icon)}</div><div class="label">${h.label}</div><div class="ms">${esc(ms)}</div></div>`;
   }).join("");
   const checks = diag.checks.map((c) => `<div class="check">
@@ -481,7 +488,7 @@ function renderDoctor(d) {
       </tbody></table>` : "";
   el.innerHTML = `${intro}
     <div class="verdict ${diag.status}"><h2>${esc(diag.headline)}</h2><p>${esc(diag.summary)}</p></div>
-    <div class="chain">${chain}</div>
+    <div class="chain" style="grid-template-columns:repeat(${hops.length},1fr)">${chain}</div>
     ${checks}${dns}
     <p class="note">Checked ${esc(ago(diag.at))}.</p>`;
 }

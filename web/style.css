@@ -338,7 +338,8 @@ textarea { min-height: 70px; resize: vertical; }
   .device .right { display: none; }
   .live-on .device .right { display: flex; grid-column: 2; flex-direction: row; gap: 10px; align-items: baseline; }
   .chain { grid-template-columns: repeat(2, 1fr); row-gap: 16px; }
-  .hop:nth-child(2)::after { display: none; }
+  .chain { grid-template-columns: repeat(2, 1fr) !important; }
+  .hop:nth-child(2n)::after, .hop:last-child::after { display: none; }
   .kv { grid-template-columns: 110px minmax(0, 1fr); }
   .evidence .src { width: 90px; }
 }
