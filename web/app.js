@@ -105,8 +105,19 @@ function name(d) {
   return d.custom_name || d.name;
 }
 
+// A device's own findings plus network-wide ones about it (e.g. a port the
+// router forwards to it).
+function deviceFindings(d) {
+  const network = (state.data?.report?.findings || []).filter((f) => f.device_id === d.id);
+  return [...(d.findings || []), ...network];
+}
+
 function activeFindings(d) {
-  return (d.findings || []).filter((f) => !f.ignored && f.severity !== "info");
+  return deviceFindings(d).filter((f) => !f.ignored && f.severity !== "info");
+}
+
+function mappingsFor(d) {
+  return (state.data?.report?.exposure?.mappings || []).filter((m) => m.enabled && m.internal_ip === d.ip);
 }
 
 function worstSeverity(findings) {
@@ -194,7 +205,8 @@ function renderStats(report) {
 
   const tdc = $("#tab-devices-count");
   tdc.textContent = online.length || "";
-  const issues = report.devices.flatMap(activeFindings).length + report.findings.filter((f) => !f.ignored && f.severity !== "info").length;
+  const issues = [...report.findings, ...report.devices.flatMap((d) => d.findings || [])]
+    .filter((f) => !f.ignored && f.severity !== "info").length;
   const tsc = $("#tab-security-count");
   tsc.textContent = issues || "";
   tsc.classList.toggle("alert", issues > 0);
@@ -346,6 +358,37 @@ function findingCard(f, devices) {
   </div>`;
 }
 
+function exposurePanel(report) {
+  const exp = report.exposure;
+  if (!exp) {
+    return `<div class="panel"><h3>Open to the internet</h3>
+      <p>Your router didn't share a list of open ports. Usually that means automatic port opening (UPnP) is off, which is good.
+      Ports forwarded by hand in the router's settings can't be seen from inside your network by any scanner; check the router's "Port forwarding" page for those.</p></div>`;
+  }
+  const mappings = exp.mappings.filter((m) => m.enabled);
+  const byIp = (ip) => report.devices.find((d) => d.ip === ip && d.online);
+  const address = exp.external_ip
+    ? `<p>Your internet address: <span class="mono">${esc(exp.external_ip)}</span>${exp.shared_address ? ' <span class="badge info">shared by your provider</span>' : ""}</p>`
+    : "";
+  const shared = exp.shared_address
+    ? "<p>Your provider shares one public address between many customers, so even forwarded ports usually can't be reached from outside.</p>"
+    : "";
+  if (!mappings.length) {
+    return `<div class="panel good"><h3>Open to the internet: nothing</h3>${address}
+      <p>Your router isn't forwarding any ports, so nothing on your network can be reached directly from the internet.</p>${shared}</div>`;
+  }
+  const rows = mappings.map((m) => {
+    const d = m.internal_ip && byIp(m.internal_ip);
+    const who = d ? `<a data-device="${esc(d.id)}">${esc(name(d))}</a>` : esc(m.internal_ip || "?");
+    const ports = m.external_port === m.internal_port ? `${m.external_port}` : `${m.external_port} → ${m.internal_port}`;
+    const expires = m.lease_seconds ? `for ${Math.round(m.lease_seconds / 60)} min` : "until removed";
+    return `<tr><td>${who}</td><td class="mono">${esc(ports)} ${esc(m.protocol)}</td><td>${esc(m.description || "—")}</td><td>${esc(expires)}</td></tr>`;
+  }).join("");
+  return `<div class="panel warn"><h3>Open to the internet: ${mappings.length} port${mappings.length > 1 ? "s" : ""}</h3>${address}
+    <p>Apps and devices asked your router (via UPnP) to let the internet connect to them directly. Games and video calls often do this; cameras and remote-access tools are riskier. Each one is explained below.</p>${shared}
+    <table class="dns-table"><thead><tr><th>Device</th><th>Port</th><th>Opened by</th><th>Open</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+
 function renderSecurity(report) {
   const el = $("#tab-security");
   if (!report) {
@@ -367,6 +410,7 @@ function renderSecurity(report) {
         <p style="margin:4px 0 0;color:var(--muted)">Every warning explains what it means and what to do. If something is intentional, dismiss it and it won't nag you again.</p>
       </div>
     </div>
+    ${exposurePanel(report)}
     ${active.map((f) => findingCard(f, report.devices)).join("") || ""}
     ${ignored.length ? `<h4 class="day">Dismissed (${ignored.length})</h4>${ignored.map((f) => findingCard(f, report.devices)).join("")}` : ""}`;
 }
@@ -462,7 +506,8 @@ function renderDrawer(d) {
     ["First seen", when(d.first_seen)],
     ["Last seen", d.online ? "Now" : `${when(d.last_seen)} (${ago(d.last_seen)})`],
   ].filter(([, v]) => v);
-  const issues = d.findings || [];
+  const issues = deviceFindings(d);
+  const exposed = mappingsFor(d);
   const links = webLinks(d);
   $("#drawer-body").innerHTML = `
     <div class="drawer-head">
@@ -490,6 +535,7 @@ function renderDrawer(d) {
       <ul class="evidence">${ev.map((e) => `<li><span class="src">${esc(e.source)}</span><span>${esc(e.detail)}</span></li>`).join("")}</ul>
     </div>
 
+    ${exposed.length ? `<div class="section"><h4>Reachable from the internet</h4><ul class="ports">${exposed.map((m) => `<li><span class="mono">${m.external_port}</span><span>${esc(m.protocol)} → port ${m.internal_port}</span><span></span>${m.description ? `<span class="banner-text">Opened by "${esc(m.description)}"</span>` : ""}</li>`).join("")}</ul></div>` : ""}
     ${issues.length ? `<div class="section"><h4>Security</h4>${issues.map((f) => findingCard(f, [])).join("")}</div>` : ""}
 
     <div class="section"><h4>Details</h4><dl class="kv">${kv.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl></div>

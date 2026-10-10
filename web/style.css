@@ -287,6 +287,13 @@ textarea { min-height: 70px; resize: vertical; }
 .event.ip_changed .ev-dot { background: var(--info); }
 .event a { cursor: pointer; }
 
+.panel { background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--info); border-radius: var(--radius); padding: 14px 16px; margin-bottom: 14px; font-size: 14px; }
+.panel.good { border-left-color: var(--good); }
+.panel.warn { border-left-color: var(--warn); }
+.panel h3 { margin: 0 0 6px; font-size: 16px; }
+.panel p { margin: 6px 0; }
+.panel a { cursor: pointer; }
+
 /* Live mode */
 .live-chip { display: inline-flex; align-items: center; gap: 6px; }
 .live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }

@@ -81,6 +81,36 @@ pub fn to_markdown(report: &ScanReport) -> String {
         out.push('\n');
     }
 
+    if let Some(exp) = &report.exposure {
+        let mappings: Vec<_> = exp.mappings.iter().filter(|m| m.enabled).collect();
+        let _ = writeln!(out, "## Open to the internet\n");
+        if let Some(ip) = &exp.external_ip {
+            let shared = if exp.shared_address { " (shared by the provider: carrier-grade NAT)" } else { "" };
+            let _ = writeln!(out, "Public address: {ip}{shared}\n");
+        }
+        if mappings.is_empty() {
+            let _ = writeln!(out, "The router forwards no ports.\n");
+        } else {
+            let _ = writeln!(out, "| External port | To | Opened by |");
+            let _ = writeln!(out, "|---|---|---|");
+            for m in mappings {
+                let to = m.internal_ip.map_or("?".to_string(), |ip| {
+                    let name = report.devices.iter().find(|d| d.ip == ip).map(|d| d.display_name().to_string());
+                    format!("{} ({ip}:{})", name.unwrap_or_default(), m.internal_port)
+                });
+                let _ = writeln!(
+                    out,
+                    "| {} {} | {} | {} |",
+                    m.external_port,
+                    m.protocol,
+                    md(&to),
+                    md(m.description.as_deref().unwrap_or(""))
+                );
+            }
+            out.push('\n');
+        }
+    }
+
     let _ = writeln!(out, "## Devices\n");
     let _ = writeln!(out, "| Name | Type | IP | Manufacturer | Open ports | Status |");
     let _ = writeln!(out, "|---|---|---|---|---|---|");

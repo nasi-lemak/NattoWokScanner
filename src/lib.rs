@@ -18,5 +18,6 @@ pub mod scan;
 pub mod security;
 pub mod ssdp;
 pub mod store;
+pub mod upnp;
 pub mod web;
 pub mod wol;

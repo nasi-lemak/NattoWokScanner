@@ -30,15 +30,41 @@ impl Response {
 }
 
 pub async fn get(addr: SocketAddr, host: &str, path: &str, timeout: Duration) -> Result<Response> {
-    tokio::time::timeout(timeout, get_inner(addr, host, path)).await.context("timed out")?
+    tokio::time::timeout(timeout, request(addr, "GET", host, path, &[], "")).await.context("timed out")?
 }
 
-async fn get_inner(addr: SocketAddr, host: &str, path: &str) -> Result<Response> {
+pub async fn post(
+    addr: SocketAddr,
+    host: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: &str,
+    timeout: Duration,
+) -> Result<Response> {
+    tokio::time::timeout(timeout, request(addr, "POST", host, path, headers, body)).await.context("timed out")?
+}
+
+async fn request(
+    addr: SocketAddr,
+    method: &str,
+    host: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: &str,
+) -> Result<Response> {
     let mut stream = TcpStream::connect(addr).await?;
-    let request = format!(
-        "GET {path} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: NattoWokScanner/{}\r\nAccept: */*\r\nConnection: close\r\n\r\n",
+    let mut request = format!(
+        "{method} {path} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: NattoWokScanner/{}\r\nAccept: */*\r\nConnection: close\r\n",
         env!("CARGO_PKG_VERSION")
     );
+    for (k, v) in headers {
+        request.push_str(&format!("{k}: {v}\r\n"));
+    }
+    if method != "GET" {
+        request.push_str(&format!("Content-Length: {}\r\n", body.len()));
+    }
+    request.push_str("\r\n");
+    request.push_str(body);
     stream.write_all(request.as_bytes()).await?;
     let mut buf = Vec::new();
     let mut chunk = [0u8; 8192];

@@ -265,7 +265,7 @@ async fn run(cli: Cli) -> Result<()> {
             if json {
                 println!("{}", serde_json::to_string_pretty(&view.devices)?);
             } else {
-                print_devices(&paint, &view.devices);
+                print_devices(&paint, &view.devices, &view.findings);
             }
             Ok(())
         }
@@ -586,7 +586,7 @@ fn truncate(s: &str, n: usize) -> String {
     if s.chars().count() <= n { s.to_string() } else { format!("{}…", s.chars().take(n - 1).collect::<String>()) }
 }
 
-fn print_devices(paint: &Paint, devices: &[Device]) {
+fn print_devices(paint: &Paint, devices: &[Device], network_findings: &[nattowok::model::Finding]) {
     // Pad before colouring, or the escape codes throw the columns off.
     println!(
         "  {}",
@@ -608,7 +608,12 @@ fn print_devices(paint: &Paint, devices: &[Device]) {
         if d.is_new {
             status.push(paint.red("NEW"));
         }
-        let issues = d.findings.iter().filter(|f| !f.ignored && f.severity > Severity::Info).count();
+        let issues = d
+            .findings
+            .iter()
+            .chain(network_findings.iter().filter(|f| f.device_id.as_deref() == Some(d.id.as_str())))
+            .filter(|f| !f.ignored && f.severity > Severity::Info)
+            .count();
         if issues > 0 {
             status.push(paint.yellow(&format!("{issues} issue{}", if issues == 1 { "" } else { "s" })));
         }
@@ -635,6 +640,45 @@ fn print_devices(paint: &Paint, devices: &[Device]) {
     }
 }
 
+fn print_exposure(paint: &Paint, report: &ScanReport) {
+    let Some(exp) = &report.exposure else {
+        println!(
+            "\n  {} {}",
+            paint.bold("Open to the internet"),
+            paint.dim("(router doesn't share its port-forwarding list; UPnP is probably off)")
+        );
+        return;
+    };
+    let mappings: Vec<_> = exp.mappings.iter().filter(|m| m.enabled).collect();
+    let address = exp.external_ip.as_deref().map(|ip| format!(" via {ip}")).unwrap_or_default();
+    if mappings.is_empty() {
+        println!("\n  {} {}{address}", paint.bold("Open to the internet"), paint.green("nothing"));
+        return;
+    }
+    println!(
+        "\n  {} {} port{}{address}",
+        paint.bold("Open to the internet"),
+        mappings.len(),
+        if mappings.len() == 1 { "" } else { "s" }
+    );
+    for m in mappings {
+        let who = m
+            .internal_ip
+            .map(|ip| {
+                report.devices.iter().find(|d| d.ip == ip).map_or(ip.to_string(), |d| d.display_name().to_string())
+            })
+            .unwrap_or_else(|| "?".into());
+        let by = m.description.as_deref().map(|d| paint.dim(&format!("  opened by \"{d}\""))).unwrap_or_default();
+        println!("    {:>5}/{:<3} → {who}:{}{by}", m.external_port, m.protocol, m.internal_port);
+    }
+    if exp.shared_address {
+        println!(
+            "    {}",
+            paint.dim("Your provider shares your public address, so these probably aren't reachable from outside.")
+        );
+    }
+}
+
 fn print_report(paint: &Paint, report: &ScanReport, events: &[Event]) {
     let n = &report.network;
     println!(
@@ -647,7 +691,8 @@ fn print_report(paint: &Paint, report: &ScanReport, events: &[Event]) {
             (report.finished_at - report.started_at).num_milliseconds() as f64 / 1000.0
         ))
     );
-    print_devices(paint, &report.devices);
+    print_devices(paint, &report.devices, &report.findings);
+    print_exposure(paint, report);
 
     let mut findings: Vec<_> = report.all_findings().filter(|f| !f.ignored && f.severity > Severity::Info).collect();
     findings.sort_by_key(|f| std::cmp::Reverse(f.severity));

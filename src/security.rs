@@ -1,7 +1,7 @@
 //! Plain-language security advice. Each finding says what it means and what
 //! to do, and has a stable id so people can dismiss it.
 
-use crate::model::{Device, DeviceKind, Finding, NetworkInfo, Severity};
+use crate::model::{Device, DeviceKind, Finding, NetworkInfo, PortMapping, RouterExposure, Severity};
 
 fn finding(
     id: String,
@@ -163,7 +163,12 @@ pub fn device_findings(d: &Device) -> Vec<Finding> {
 }
 
 /// Findings about the network as a whole.
-pub fn network_findings(info: &NetworkInfo, devices: &[Device], previous_gateway_mac: Option<&str>) -> Vec<Finding> {
+pub fn network_findings(
+    info: &NetworkInfo,
+    devices: &[Device],
+    exposure: Option<&RouterExposure>,
+    previous_gateway_mac: Option<&str>,
+) -> Vec<Finding> {
     let mut out = Vec::new();
 
     if info.ip.is_link_local() {
@@ -210,6 +215,10 @@ pub fn network_findings(info: &NetworkInfo, devices: &[Device], previous_gateway
         }
     }
 
+    if let Some(exp) = exposure {
+        out.extend(exposure_findings(exp, devices));
+    }
+
     let unreviewed = devices.iter().filter(|d| !d.trusted && !d.is_self && !d.is_gateway).count();
     if unreviewed > 0 {
         out.push(finding(
@@ -222,6 +231,68 @@ pub fn network_findings(info: &NetworkInfo, devices: &[Device], previous_gateway
         ));
     }
     out
+}
+
+/// How worrying it is for `port` on a home device to be reachable from the
+/// internet, and what it is.
+fn exposure_risk(port: u16) -> (Severity, &'static str) {
+    match port {
+        23 | 2323 | 3389 | 5900 | 5901 | 445 | 139 | 135 | 21 | 5555 | 2375 | 6379 | 27017 | 9200 | 11211 | 1433
+        | 3306 | 5432 => (Severity::High, "a service that attackers scan the whole internet for"),
+        22 | 80 | 81 | 443 | 8080 | 8443 | 8000 | 8081 | 9000 | 5000 | 5001 | 8123 | 554 | 8554 | 1883 | 37777
+        | 34567 => (Severity::Medium, "a login page, camera stream or remote access service"),
+        3074 | 3075 | 3478..=3480 | 3659 | 9308 | 27015..=27036 | 1935 | 25565 => {
+            (Severity::Info, "a port games and voice chat use for direct connections")
+        }
+        6881..=6889 | 51413 => (Severity::Info, "a port file-sharing (BitTorrent) apps use"),
+        _ => (Severity::Low, "an unrecognised service"),
+    }
+}
+
+fn mapping_finding(m: &PortMapping, devices: &[Device], shared_address: bool) -> Finding {
+    let device = m.internal_ip.and_then(|ip| devices.iter().find(|d| d.ip == ip));
+    let who = device.map_or_else(
+        || m.internal_ip.map_or_else(|| "A device".to_string(), |ip| format!("The device at {ip}")),
+        |d| d.display_name().to_string(),
+    );
+    let (mut severity, what) = exposure_risk(m.internal_port);
+    // Unknown devices opening unknown ports deserve a closer look.
+    if severity == Severity::Low && device.is_none_or(|d| !d.trusted) {
+        severity = Severity::Medium;
+    }
+    let mut explanation = format!(
+        "{who} asked your router to let the internet connect to port {} ({}). That's {what}.",
+        m.internal_port, m.protocol
+    );
+    if let Some(desc) = &m.description {
+        explanation.push_str(&format!(" The app that asked called it \"{desc}\"."));
+    }
+    if m.remote_host.is_some() {
+        explanation.push_str(" Only one specific internet address is allowed to use it.");
+        severity = severity.min(Severity::Low);
+    }
+    if shared_address {
+        explanation.push_str(" Your internet provider shares one public address between many customers, so this probably isn't actually reachable from outside.");
+        severity = severity.min(Severity::Low);
+    }
+    let fix = if severity == Severity::Info {
+        "Nothing to do if you use this. If you don't, turn off UPnP in your router's settings and restart the device."
+    } else {
+        "If you don't know why this is open, turn off UPnP in your router's settings (often under Advanced or NAT) and restart the device. If you need remote access, a VPN (such as your router's built-in one or Tailscale) is much safer than an open port."
+    };
+    Finding {
+        id: format!("exposed-{}-{}", m.protocol.to_lowercase(), m.external_port),
+        severity,
+        title: format!("{who} is reachable from the internet on port {}", m.external_port),
+        explanation,
+        fix: fix.to_string(),
+        device_id: device.map(|d| d.id.clone()),
+        ignored: false,
+    }
+}
+
+pub fn exposure_findings(exp: &RouterExposure, devices: &[Device]) -> Vec<Finding> {
+    exp.mappings.iter().filter(|m| m.enabled).map(|m| mapping_finding(m, devices, exp.shared_address)).collect()
 }
 
 /// 100 minus penalties for the findings people haven't dismissed.
@@ -285,10 +356,44 @@ mod tests {
         gw.trusted = true;
         let mut evil = dev(66, "00:11:22:33:44:55");
         evil.trusted = true;
-        let f = network_findings(&info, &[gw.clone(), evil], None);
+        let f = network_findings(&info, &[gw.clone(), evil], None, None);
         assert!(f.iter().any(|f| f.id.starts_with("arp-spoof") && f.severity == Severity::High));
-        let f = network_findings(&info, &[gw], Some("AA:AA:AA:AA:AA:AA"));
+        let f = network_findings(&info, &[gw], None, Some("AA:AA:AA:AA:AA:AA"));
         assert!(f.iter().any(|f| f.id.starts_with("gateway-changed")));
+    }
+
+    #[test]
+    fn rates_forwarded_ports() {
+        let mapping = |port: u16, ip: u8| PortMapping {
+            external_port: port,
+            protocol: "TCP".into(),
+            internal_ip: Some(Ipv4Addr::new(192, 168, 1, ip)),
+            internal_port: port,
+            description: Some("app".into()),
+            enabled: true,
+            lease_seconds: None,
+            remote_host: None,
+        };
+        let mut cam = dev(52, "00:11:22:33:44:52");
+        cam.name = "Hallway camera".into();
+        let mut exp = RouterExposure {
+            external_ip: Some("81.2.69.160".into()),
+            shared_address: false,
+            mappings: vec![mapping(3389, 10), mapping(554, 52), mapping(3074, 31), mapping(40000, 77)],
+        };
+        exp.mappings.push(PortMapping { enabled: false, ..mapping(23, 9) });
+        let f = exposure_findings(&exp, std::slice::from_ref(&cam));
+        assert_eq!(f.len(), 4, "disabled mappings are skipped");
+        assert_eq!(f[0].severity, Severity::High);
+        assert_eq!(f[1].severity, Severity::Medium);
+        assert_eq!(f[1].title, "Hallway camera is reachable from the internet on port 554");
+        assert_eq!(f[1].device_id.as_deref(), Some("00:11:22:33:44:52"));
+        assert_eq!(f[2].severity, Severity::Info);
+        assert_eq!(f[3].severity, Severity::Medium, "unknown port on an unknown device");
+
+        exp.shared_address = true;
+        let f = exposure_findings(&exp, &[cam]);
+        assert!(f.iter().all(|f| f.severity <= Severity::Low));
     }
 
     #[test]

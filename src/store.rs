@@ -407,7 +407,12 @@ impl Inventory {
         }
 
         // Re-evaluate network findings now that trust and history are known.
-        report.findings = security::network_findings(&report.network, &report.devices, self.previous_router.as_deref());
+        report.findings = security::network_findings(
+            &report.network,
+            &report.devices,
+            report.exposure.as_ref(),
+            self.previous_router.as_deref(),
+        );
         let previously_seen: BTreeSet<String> =
             self.last_report.as_ref().map(|r| r.all_findings().map(|f| f.id.clone()).collect()).unwrap_or_default();
         self.mark_ignored(report);
@@ -447,7 +452,12 @@ impl Inventory {
             d.findings = security::device_findings(d);
         }
         // Trust and names may have changed since the scan.
-        report.findings = security::network_findings(&report.network, &report.devices, self.previous_router.as_deref());
+        report.findings = security::network_findings(
+            &report.network,
+            &report.devices,
+            report.exposure.as_ref(),
+            self.previous_router.as_deref(),
+        );
         self.mark_ignored(&mut report);
         let online: BTreeSet<String> = report.devices.iter().map(|d| d.id.clone()).collect();
         // Drop suggestions that no longer make sense: both are online (so they
@@ -714,6 +724,7 @@ mod tests {
             findings: vec![],
             health_score: 100,
             notes: vec![],
+            exposure: None,
         }
     }
 

@@ -300,6 +300,40 @@ pub struct NetworkInfo {
     pub wireless: bool,
 }
 
+/// A port your router forwards from the internet to a device, as reported
+/// by the router itself over UPnP.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct PortMapping {
+    pub external_port: u16,
+    pub protocol: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub internal_ip: Option<Ipv4Addr>,
+    pub internal_port: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub enabled: bool,
+    /// Seconds until the router drops it; `None` or 0 means permanent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lease_seconds: Option<u32>,
+    /// Only this internet address may connect, when set.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_host: Option<String>,
+}
+
+/// What your router exposes to the internet.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, Default)]
+pub struct RouterExposure {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub external_ip: Option<String>,
+    /// The router's "public" address is itself private: your provider shares
+    /// one real public address between many customers (carrier-grade NAT),
+    /// so forwarded ports usually aren't reachable from the internet at all.
+    #[serde(default)]
+    pub shared_address: bool,
+    #[serde(default)]
+    pub mappings: Vec<PortMapping>,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct ScanReport {
     pub started_at: DateTime<Utc>,
@@ -312,6 +346,9 @@ pub struct ScanReport {
     /// Things that limited this scan, e.g. a missing `ping` command.
     #[serde(default)]
     pub notes: Vec<String>,
+    /// `None` when the router doesn't answer UPnP queries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exposure: Option<RouterExposure>,
 }
 
 impl ScanReport {

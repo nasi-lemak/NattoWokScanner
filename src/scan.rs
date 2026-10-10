@@ -12,7 +12,7 @@ use chrono::Utc;
 use tokio::sync::Semaphore;
 
 use crate::model::{Device, ScanReport};
-use crate::{dns, identify, mdns, neighbors, netbios, netinfo, oui, probe, ssdp};
+use crate::{dns, identify, mdns, neighbors, netbios, netinfo, oui, probe, ssdp, upnp};
 
 #[derive(Debug, Clone)]
 pub struct ScanOptions {
@@ -212,15 +212,22 @@ pub async fn run(opts: &ScanOptions, progress: Progress) -> Result<ScanReport> {
 
     // Phase 5: UPnP descriptions, then identification.
     progress("Identifying devices", 0.88);
-    let upnp: HashMap<Ipv4Addr, crate::model::UpnpInfo> = probe::futures_join_all(
+    let descriptions = probe::futures_join_all(
         ssdp_hosts
             .iter()
             .filter(|(ip, _)| in_range.contains(ip))
             .map(|(ip, host)| async move { (*ip, ssdp::describe(*ip, host).await) }),
-    )
-    .await
-    .into_iter()
-    .collect();
+    );
+    // Meanwhile, ask the router what it forwards in from the internet.
+    let gateway_location = info.gateway.and_then(|gw| Some((gw, ssdp_hosts.get(&gw)?.location.clone()?)));
+    let exposure = async {
+        match &gateway_location {
+            Some((gw, location)) => upnp::exposure(location, *gw).await,
+            None => None,
+        }
+    };
+    let (descriptions, exposure) = tokio::join!(descriptions, exposure);
+    let upnp: HashMap<Ipv4Addr, crate::model::UpnpInfo> = descriptions.into_iter().collect();
 
     let mut devices = Vec::new();
     let mut used_ids = HashSet::new();
@@ -272,6 +279,7 @@ pub async fn run(opts: &ScanOptions, progress: Progress) -> Result<ScanReport> {
         findings: Vec::new(),
         health_score: 100,
         notes,
+        exposure,
     })
 }
 
