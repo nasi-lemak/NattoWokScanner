@@ -109,10 +109,11 @@ Data lives in your OS data folder (`~/.local/share/nattowok`, `~/Library/Applica
 ## Development
 
 ```sh
-cargo test                          # unit + API tests
-cargo clippy --all-targets
+scripts/check.sh                    # formatting, lints and tests: run before pushing
 cargo run -- scan                   # run from source
 ```
+
+There's no hosted CI; `scripts/check.sh` is the check.
 
 Layout:
 
