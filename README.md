@@ -52,6 +52,15 @@ cargo install --path .
 
 This puts a single self-contained `nattowok` binary in `~/.cargo/bin`. The vendor database and the dashboard are compiled in.
 
+To make packages to hand to other people (a `.tar.gz` or `.zip` with the binary, README and license, plus `SHA256SUMS`):
+
+```sh
+scripts/build-release.sh                                   # for this computer's platform
+CC_x86_64_unknown_linux_musl=clang scripts/build-release.sh x86_64-unknown-linux-musl   # static Linux build
+```
+
+`cargo install --path . --no-default-features` builds without the two features that use HTTPS (speed test and vendor updates), if you want nothing internet-facing at all.
+
 ## Use
 
 ```sh
@@ -76,6 +85,7 @@ nattowok export md -o report.md     # a report for whoever helps you with tech
 nattowok home                       # who's home, going by their phones
 nattowok networks                   # the networks NattoWok remembers
 nattowok info                       # this computer's network settings
+nattowok update-vendors             # fetch the latest manufacturer list from the IEEE
 ```
 
 Devices can be referred to by name, IP or MAC.
@@ -126,7 +136,7 @@ Data lives in your OS data folder (`~/.local/share/nattowok`, `~/Library/Applica
 
 ## Privacy and safety
 
-- **Local only.** Only two features talk to the internet, and only when you run them: the Internet doctor (a few TCP connects and DNS queries to Cloudflare, Google and Quad9, plus Google's standard connectivity check) and the speed test (Cloudflare's public speed-test service). Results stay on your computer.
+- **Local only.** Only three features talk to the internet, and only when you run them: the Internet doctor (a few TCP connects and DNS queries to Cloudflare, Google and Quad9, plus Google's standard connectivity check), the speed test (Cloudflare's public speed-test service) and `update-vendors` (downloads the IEEE's public registry). Nothing about your network is sent anywhere, and results stay on your computer.
 - **The dashboard listens on localhost by default.** Every API call needs a random per-run token embedded in the page, which other websites can't read. Requests whose `Host` isn't localhost are refused, which blocks DNS-rebinding attacks. `--listen 0.0.0.0:7878` exposes it on purpose; access then requires a key printed in the terminal.
 - **Polite scanning.** NattoWok only connects. It never logs in, never tries passwords, and only follows UPnP description URLs that point back at the device that announced them.
 - **Router exposure is read-only.** NattoWok asks the router for its port-forwarding list; it never adds or removes mappings.
@@ -159,14 +169,14 @@ Layout:
 | `src/security.rs` | Plain-language findings and health score |
 | `src/store.rs` | Per-network inventory, change tracking, merging |
 | `src/matching.rs` | Recognising devices that return under a new hardware address |
-| `src/speedtest.rs` | Speed and bufferbloat test |
+| `src/speedtest.rs`, `src/fetch.rs` | Speed and bufferbloat test; small HTTPS client |
 | `src/doctor.rs`, `src/wifi.rs` | Internet doctor, Wi-Fi signal and channel readings |
 | `src/upnp.rs` | Router port-forwarding (exposure) queries |
 | `src/notify.rs`, `src/service.rs`, `src/settings.rs` | Desktop notifications, background service, preferences |
 | `src/web.rs`, `web/` | Dashboard server and UI (embedded at compile time) |
 | `src/main.rs` | CLI |
 
-The vendor table in `data/oui.tsv.gz` is generated from the IEEE MA-L registry:
+The built-in vendor table in `data/oui.tsv.gz` is generated from the IEEE MA-L registry (people can also refresh theirs with `nattowok update-vendors`, which stores the new list in the data folder):
 
 ```sh
 curl -o oui.csv https://standards-oui.ieee.org/oui/oui.csv

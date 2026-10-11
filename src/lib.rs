@@ -3,6 +3,8 @@
 
 pub mod dns;
 pub mod doctor;
+#[cfg(feature = "tls")]
+pub mod fetch;
 pub mod http;
 pub mod identify;
 pub mod matching;

@@ -21,7 +21,6 @@ use tokio::net::TcpStream;
 use tokio_rustls::TlsConnector;
 use tokio_rustls::client::TlsStream;
 use tokio_rustls::rustls::pki_types::ServerName;
-use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 
 use crate::probe::{self, TcpState};
 use crate::scan::Progress;
@@ -91,18 +90,7 @@ impl Default for SpeedOptions {
 }
 
 fn tls() -> Result<TlsConnector> {
-    let mut roots = RootCertStore::empty();
-    // The OS trust store, so corporate proxies with their own CA keep working.
-    let native = rustls_native_certs::load_native_certs();
-    roots.add_parsable_certificates(native.certs);
-    if roots.is_empty() {
-        bail!("couldn't load this computer's trusted certificates");
-    }
-    let config = ClientConfig::builder_with_provider(Arc::new(tokio_rustls::rustls::crypto::ring::default_provider()))
-        .with_safe_default_protocol_versions()?
-        .with_root_certificates(roots)
-        .with_no_client_auth();
-    Ok(TlsConnector::from(Arc::new(config)))
+    crate::fetch::connector()
 }
 
 async fn resolve() -> Result<SocketAddr> {

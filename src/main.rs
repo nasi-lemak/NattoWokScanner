@@ -155,6 +155,8 @@ enum Command {
     Home,
     /// List the networks NattoWok remembers (each has its own devices)
     Networks,
+    /// Download the latest manufacturer list from the IEEE (about 4 MB)
+    UpdateVendors,
     /// Show this computer's network settings
     Info {
         #[arg(long)]
@@ -267,6 +269,7 @@ fn terminal_progress() -> scan::Progress {
 async fn run(cli: Cli) -> Result<()> {
     let data_dir = cli.data_dir.clone().unwrap_or_else(nattowok::store::default_dir);
     let workspace = Workspace::new(data_dir.clone());
+    nattowok::oui::init(&data_dir);
     let current = || workspace.load_current(cli.interface.as_deref());
     let paint = Paint::new();
     let command = cli.command.unwrap_or(Command::Ui {
@@ -714,6 +717,31 @@ async fn run(cli: Cli) -> Result<()> {
             }
             Ok(())
         }
+        #[cfg(not(feature = "tls"))]
+        Command::UpdateVendors => {
+            bail!("this build of NattoWok can't download updates (built without the `tls` feature)")
+        }
+        #[cfg(feature = "tls")]
+        Command::UpdateVendors => {
+            use nattowok::oui;
+            let before = oui::source();
+            eprintln!("Downloading the IEEE manufacturer registry…");
+            let csv = nattowok::fetch::get("https://standards-oui.ieee.org/oui/oui.csv", 20_000_000).await?;
+            let rows = oui::parse_ieee_csv(&String::from_utf8_lossy(&csv));
+            // A partial or garbled download must never replace a good list.
+            anyhow::ensure!(
+                rows.len() > 20_000,
+                "the download looks incomplete ({} vendors); keeping the current list",
+                rows.len()
+            );
+            std::fs::create_dir_all(&data_dir)?;
+            let path = data_dir.join(oui::UPDATED_FILE);
+            let tmp = path.with_extension("gz.tmp");
+            std::fs::write(&tmp, oui::encode_table(&rows)?)?;
+            std::fs::rename(&tmp, &path)?;
+            println!("Updated: {} manufacturers (was: {before}). Saved to {}", rows.len(), path.display());
+            Ok(())
+        }
         Command::Info { json } => {
             let info = netinfo::detect(cli.interface.as_deref(), None)?;
             if json {
@@ -741,6 +769,7 @@ async fn run(cli: Cli) -> Result<()> {
                 row("MTU", m.to_string());
             }
             row("Data folder", data_dir.display().to_string());
+            row("Vendor list", nattowok::oui::source());
             row("Network id", workspace.key_for(Some(&info)));
             Ok(())
         }

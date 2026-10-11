@@ -252,6 +252,8 @@ const VENDORS: &[(&str, &[(DeviceKind, u32)])] = &[
     ("samsung", &[(Phone, 12), (Tv, 10)]),
     ("lg electronics", &[(Tv, 15), (Phone, 5)]),
     ("lg innotek", &[(SmartHome, 15), (Tv, 10)]),
+    ("lg", &[(Tv, 15), (Phone, 5)]),
+    ("lge", &[(Tv, 15), (Phone, 5)]),
     ("sony interactive", &[(GameConsole, 45)]),
     ("sony", &[(Tv, 12), (GameConsole, 6)]),
     ("nintendo", &[(GameConsole, 45)]),
