@@ -143,6 +143,8 @@ enum Command {
         #[arg(long, short)]
         output: Option<PathBuf>,
     },
+    /// Who's home, going by when their phones are on the network
+    Home,
     /// List the networks NattoWok remembers (each has its own devices)
     Networks,
     /// Show this computer's network settings
@@ -584,6 +586,38 @@ async fn run(cli: Cli) -> Result<()> {
                 Ok(())
             }
         },
+        Command::Home => {
+            let (_, inv) = current()?;
+            let view = inv.current_view().context("no devices known yet; run `nattowok scan` first")?;
+            let people: Vec<&Device> = view
+                .devices
+                .iter()
+                .filter(|d| {
+                    use nattowok::model::DeviceKind::*;
+                    matches!(d.kind, Phone | Tablet | Wearable) && (d.trusted || d.custom_name.is_some())
+                })
+                .collect();
+            if people.is_empty() {
+                println!(
+                    "Name your household's phones (`nattowok label <phone> --name \"Kim\" --trust`) to see who's home."
+                );
+                return Ok(());
+            }
+            let local =
+                |t: chrono::DateTime<chrono::Utc>| t.with_timezone(&chrono::Local).format("%a %H:%M").to_string();
+            for d in people {
+                let line = match (d.online, d.presence.last()) {
+                    (true, Some(s)) => format!("{} home since {}", paint.green("●"), local(s.from)),
+                    (true, None) => format!("{} home", paint.green("●")),
+                    (false, _) => {
+                        format!("{} away, last seen {}", paint.dim("○"), d.last_seen.map(local).unwrap_or_default())
+                    }
+                };
+                println!("  {:<24} {line}", d.display_name());
+            }
+            println!("\n  {}", paint.dim(&format!("As of the last scan, {}.", local(view.finished_at))));
+            Ok(())
+        }
         Command::Networks => {
             let (key, _) = current()?;
             let networks = workspace.networks(&key);

@@ -10,11 +10,42 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::matching;
-use crate::model::{Device, NetworkInfo, PossibleMatch, ScanReport};
+use crate::model::{Device, NetworkInfo, PossibleMatch, ScanReport, Session};
 use crate::security;
 
 const MAX_EVENTS: usize = 2000;
 const MAX_IP_HISTORY: usize = 20;
+const MAX_SESSIONS: usize = 1500;
+const MAX_SCAN_LOG: usize = 5000;
+/// Scans further apart than this can't vouch for what happened in between.
+pub const WATCH_GAP_HOURS: i64 = 6;
+/// How much history the dashboard shows.
+pub const PRESENCE_DAYS: i64 = 7;
+
+/// Extends the current session if the device was also online in the
+/// previous scan (and that scan was recent), otherwise starts a new one.
+fn record_presence(sessions: &mut Vec<Session>, at: DateTime<Utc>, continuous: bool) {
+    match sessions.last_mut() {
+        Some(s) if continuous => s.to = at,
+        _ => sessions.push(Session { from: at, to: at }),
+    }
+    if sessions.len() > MAX_SESSIONS {
+        sessions.remove(0);
+    }
+}
+
+/// Sorts sessions and joins overlapping ones (after a merge).
+fn normalize_sessions(sessions: &mut Vec<Session>) {
+    sessions.sort_by_key(|s| s.from);
+    let mut out: Vec<Session> = Vec::with_capacity(sessions.len());
+    for s in sessions.drain(..) {
+        match out.last_mut() {
+            Some(last) if s.from <= last.to => last.to = last.to.max(s.to),
+            _ => out.push(s),
+        }
+    }
+    *sessions = out;
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct KnownDevice {
@@ -33,6 +64,9 @@ pub struct KnownDevice {
     pub times_seen: u32,
     #[serde(default)]
     pub ip_history: Vec<(Ipv4Addr, DateTime<Utc>)>,
+    /// When it was online, from consecutive scans.
+    #[serde(default)]
+    pub sessions: Vec<Session>,
     /// The device as it looked when last seen.
     pub snapshot: Device,
 }
@@ -80,6 +114,9 @@ pub struct Inventory {
     /// suggesting they're the same.
     #[serde(default)]
     pub not_same: BTreeSet<(String, String)>,
+    /// When scans ran, so "offline" can be told apart from "not watching".
+    #[serde(default)]
+    pub scan_log: Vec<DateTime<Utc>>,
 }
 
 /// Fields people can change about a device.
@@ -298,6 +335,8 @@ impl Inventory {
         let mut events = Vec::new();
         let now_online: BTreeSet<String> = report.devices.iter().map(|d| d.id.clone()).collect();
         let mut claimed = BTreeSet::new();
+        let recent_previous_scan =
+            self.scan_log.last().is_some_and(|last| at - *last <= chrono::Duration::hours(WATCH_GAP_HOURS));
 
         for d in &mut report.devices {
             // A stranger may be a known device with a new hardware address.
@@ -331,6 +370,7 @@ impl Inventory {
                             last_seen: at,
                             times_seen: 1,
                             ip_history: vec![(d.ip, at)],
+                            sessions: vec![Session { from: at, to: at }],
                             snapshot: d.clone(),
                         },
                     );
@@ -369,6 +409,7 @@ impl Inventory {
                     }
                     known.last_seen = at;
                     known.times_seen += 1;
+                    record_presence(&mut known.sessions, at, recent_previous_scan && self.online.contains(&d.id));
                     known.snapshot = d.clone();
                     if let Some(m) = &recognised {
                         changes.insert(
@@ -433,6 +474,10 @@ impl Inventory {
             }
         }
 
+        self.scan_log.push(at);
+        if self.scan_log.len() > MAX_SCAN_LOG {
+            self.scan_log.remove(0);
+        }
         self.online = now_online;
         self.last_report = Some(report.clone());
         events
@@ -499,6 +544,14 @@ impl Inventory {
             .collect();
         offline.sort_by_key(|d| std::cmp::Reverse(d.last_seen));
         report.devices.extend(offline);
+        let since = report.finished_at - chrono::Duration::days(PRESENCE_DAYS + 1);
+        for d in &mut report.devices {
+            d.presence = self
+                .devices
+                .get(&d.id)
+                .map(|k| k.sessions.iter().filter(|s| s.to >= since).copied().collect())
+                .unwrap_or_default();
+        }
         Some(report)
     }
 
@@ -643,6 +696,8 @@ impl Inventory {
         k.trusted |= old.trusted;
         k.first_seen = k.first_seen.min(old.first_seen);
         k.times_seen += old.times_seen;
+        k.sessions.extend(old.sessions);
+        normalize_sessions(&mut k.sessions);
         let mut history = old.ip_history;
         history.append(&mut k.ip_history);
         history.sort_by_key(|(_, at)| *at);
@@ -890,6 +945,30 @@ mod tests {
         assert_eq!(view.devices[0].custom_name.as_deref(), Some("Office printer"));
         assert!(view.devices[0].possible_match.is_none());
         assert!(!view.devices[0].is_new);
+    }
+
+    #[test]
+    fn records_presence_sessions() {
+        let mut inv = Inventory::default();
+        let a = dev(10, "00:00:00:00:00:0A");
+        let b = dev(11, "00:00:00:00:00:0B");
+        inv.apply_scan(&mut report(vec![a.clone(), b.clone()], 0));
+        inv.apply_scan(&mut report(vec![a.clone(), b.clone()], 15));
+        inv.apply_scan(&mut report(vec![a.clone()], 30)); // b leaves
+        inv.apply_scan(&mut report(vec![a.clone(), b.clone()], 45)); // b is back
+        let sa = &inv.devices[&a.id].sessions;
+        assert_eq!(sa.len(), 1, "continuously online: one session");
+        assert_eq!((sa[0].to - sa[0].from).num_minutes(), 45);
+        let sb = &inv.devices[&b.id].sessions;
+        assert_eq!(sb.len(), 2);
+        assert_eq!((sb[0].to - sb[0].from).num_minutes(), 15);
+        assert_eq!(inv.scan_log.len(), 4);
+        let view = inv.current_view().unwrap();
+        assert_eq!(view.devices.iter().find(|d| d.id == b.id).unwrap().presence.len(), 2);
+
+        let mut merged = vec![sb[1], sb[0], Session { from: sb[0].from, to: sb[0].to + chrono::Duration::minutes(1) }];
+        normalize_sessions(&mut merged);
+        assert_eq!(merged.len(), 2);
     }
 
     #[test]

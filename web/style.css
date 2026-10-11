@@ -304,6 +304,33 @@ textarea { min-height: 70px; resize: vertical; }
 #settings-btn { position: relative; }
 .dot-on { position: absolute; top: 6px; right: 6px; width: 8px; height: 8px; border-radius: 50%; background: var(--good); }
 
+/* Presence */
+.presence { display: grid; gap: 4px; }
+.pres-row { display: grid; grid-template-columns: 44px 1fr; align-items: center; gap: 8px; }
+.pres-day { font-size: 12px; color: var(--muted); }
+.pres-track {
+  position: relative; height: 14px; border-radius: 4px; overflow: hidden;
+  background: repeating-linear-gradient(135deg, var(--border) 0 2px, transparent 2px 6px);
+  border: 1px solid var(--border);
+}
+.seg { position: absolute; top: 0; bottom: 0; }
+.seg.watched { background: var(--surface-2); }
+.seg.future { background: var(--surface); }
+.seg.online { background: var(--good); border-radius: 3px; box-shadow: 0 0 0 1px var(--surface); }
+.pres-axis { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); }
+.pres-key { display: flex; gap: 14px; font-size: 12px; color: var(--muted); margin-top: 8px; }
+.pres-key span { display: inline-flex; align-items: center; gap: 5px; }
+.sw { width: 12px; height: 10px; border-radius: 2px; border: 1px solid var(--border); background: repeating-linear-gradient(135deg, var(--border) 0 2px, transparent 2px 4px); }
+.sw.online { background: var(--good); border-color: var(--good); }
+.sw.watched { background: var(--surface-2); }
+.chart-tip { position: fixed; z-index: 60; pointer-events: none; background: var(--text); color: var(--bg); font-size: 12px; padding: 5px 8px; border-radius: 6px; box-shadow: var(--shadow); max-width: 260px; }
+.people { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
+.person { display: inline-flex; align-items: center; gap: 8px; padding: 7px 12px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg); color: var(--text); text-decoration: none; cursor: pointer; font-size: 14px; }
+.person span:last-child { color: var(--muted); font-size: 13px; }
+.pdot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
+.person.home .pdot { background: var(--good); }
+.person.away { opacity: .75; }
+
 /* Live mode */
 .live-chip { display: inline-flex; align-items: center; gap: 6px; }
 .live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }

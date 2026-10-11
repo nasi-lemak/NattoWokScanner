@@ -24,6 +24,7 @@ NattoWok is a network scanner in the spirit of Fing. It's built around a differe
 | Explaining your network to whoever helps you with tech | **Export a report** (Markdown) to send them, a CSV for spreadsheets, or JSON for scripts. |
 | Not knowing what's reachable from the internet | NattoWok asks your router which ports apps and devices **opened to the internet** (UPnP), and rates each one: remote desktop and databases are serious, game and voice-chat ports are normal. It also spots when your provider shares your public address, so forwards can't actually be reached. |
 | Only finding out about a new device when you happen to look | `nattowok service install` keeps NattoWok running in the background (starting at log-in), **scanning on a schedule and sending desktop notifications** for new devices and security issues. No admin rights needed. |
+| "Is that device usually here?" | Every device gets a **week view of when it was online**, with a plain summary ("usually online between 18:00 and 08:00"). Times NattoWok wasn't scanning are shown as such, never as "offline". A **Who's home** panel (and `nattowok home`) uses household phones as a stand-in for people. |
 | Wanting automation | `nattowok watch --on-new-device "…"` runs your command when something joins (send a notification, log it, turn on a light). |
 
 ### Devices explain themselves
@@ -70,6 +71,7 @@ nattowok live                       # watch devices answer in real time; unplug 
 nattowok merge 192.168.1.88 "Sam's phone"   # tell NattoWok two entries are one device
 nattowok wake "Office PC"           # Wake-on-LAN
 nattowok export md -o report.md     # a report for whoever helps you with tech
+nattowok home                       # who's home, going by their phones
 nattowok networks                   # the networks NattoWok remembers
 nattowok info                       # this computer's network settings
 ```

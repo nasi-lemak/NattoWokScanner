@@ -493,10 +493,138 @@ function renderDoctor(d) {
     <p class="note">Checked ${esc(ago(diag.at))}.</p>`;
 }
 
+// ---------- presence ----------
+
+const HOUR = 3600000;
+const DAY = 24 * HOUR;
+
+function fmtTime(ms) {
+  return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+// "6:00 PM" today, "Fri 6:00 PM" this week, a date otherwise.
+function fmtWhen(ms) {
+  const d = new Date(ms);
+  const today = new Date();
+  if (d.toDateString() === today.toDateString()) return fmtTime(ms);
+  if (today - d < 6 * DAY) return `${d.toLocaleDateString(undefined, { weekday: "short" })} ${fmtTime(ms)}`;
+  return d.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+}
+
+function fmtSpan(ms) {
+  const m = Math.round(ms / 60000);
+  return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h ${m % 60 ? `${m % 60} min` : ""}`.trim();
+}
+
+// Periods NattoWok was scanning: consecutive scans no further apart than the watch gap.
+function watchedWindows() {
+  const gap = (state.data?.watch_gap_hours || 6) * HOUR;
+  const log = (state.data?.scan_log || []).map((t) => new Date(t).getTime()).sort((a, b) => a - b);
+  const out = [];
+  for (let i = 0; i < log.length; i++) {
+    const end = i + 1 < log.length && log[i + 1] - log[i] <= gap ? log[i + 1] : log[i];
+    const last = out[out.length - 1];
+    if (last && log[i] <= last[1]) last[1] = Math.max(last[1], end);
+    else out.push([log[i], end]);
+  }
+  return out;
+}
+
+function sessionsOf(d) {
+  return (d.presence || []).map((p) => [new Date(p.from).getTime(), new Date(p.to).getTime()]);
+}
+
+// Plain-language summary of when a device is usually around.
+function presenceSummary(d) {
+  const sessions = sessionsOf(d);
+  const watched = watchedWindows();
+  if (!watched.length) return "Not enough scans yet to show a pattern.";
+  const days = new Set();
+  const hourDays = Array.from({ length: 24 }, () => new Set());
+  for (const [a, b] of sessions) {
+    for (let t = a; t <= b; t += 15 * 60000) {
+      const dt = new Date(t);
+      hourDays[dt.getHours()].add(dt.toDateString());
+    }
+  }
+  for (const [a, b] of watched) {
+    for (let t = a; t <= b; t += HOUR) days.add(new Date(t).toDateString());
+  }
+  const n = Math.max(1, days.size);
+  const usual = hourDays.map((s) => s.size / n >= 0.5);
+  // Longest run of usual hours, wrapping past midnight (e.g. 18:00 to 08:00).
+  let best = { start: 0, len: 0 };
+  for (let start = 0; start < 24; start++) {
+    if (!usual[start] || usual[(start + 23) % 24]) continue;
+    let len = 0;
+    while (len < 24 && usual[(start + len) % 24]) len++;
+    if (len > best.len) best = { start, len };
+  }
+  const hh = (h) => `${String(h % 24).padStart(2, "0")}:00`;
+  let pattern;
+  if (!sessions.length) pattern = "Not seen online in the last week.";
+  else if (usual.every(Boolean)) pattern = "Online around the clock.";
+  else if (!best.len) pattern = "Online now and then, with no regular pattern.";
+  else pattern = `Usually online between ${hh(best.start)} and ${hh(best.start + best.len)}.`;
+  const last = sessions[sessions.length - 1];
+  const now = d.online && last ? ` Online since ${fmtWhen(last[0])}.` : "";
+  return pattern + now;
+}
+
+// A week of rows, one per day, 24 hours wide: online, offline (watched) and not-watching.
+function presenceChart(d) {
+  const sessions = sessionsOf(d);
+  const watched = watchedWindows();
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const minWidth = 0.6; // percent: a single sighting still shows up
+  const rows = [];
+  for (let i = 6; i >= 0; i--) {
+    const start = today.getTime() - i * DAY;
+    const end = start + DAY;
+    const seg = (a, b, cls, tip) => {
+      const from = Math.max(a, start);
+      const to = Math.min(b, end);
+      if (to < from || from >= end) return "";
+      const left = ((from - start) / DAY) * 100;
+      const width = Math.max(minWidth, ((to - from) / DAY) * 100);
+      return `<span class="seg ${cls}" style="left:${left.toFixed(2)}%;width:${Math.min(width, 100 - left).toFixed(2)}%" data-tip="${esc(tip)}"></span>`;
+    };
+    const watchedSegs = watched.map(([a, b]) => seg(a, b, "watched", `Watching ${fmtTime(Math.max(a, start))}–${fmtTime(Math.min(b, end))}: not online`)).join("");
+    const onlineSegs = sessions.map(([a, b]) => seg(a, b, "online", `Online ${fmtWhen(a)} – ${fmtWhen(b)}${b > a ? ` (${fmtSpan(b - a)})` : ""}`)).join("");
+    // The rest of today hasn't happened yet.
+    const future = end > Date.now() ? seg(Date.now(), end, "future", "Later today") : "";
+    const label = i === 0 ? "Today" : new Date(start).toLocaleDateString(undefined, { weekday: "short" });
+    rows.push(`<div class="pres-row"><span class="pres-day">${esc(label)}</span><div class="pres-track" data-tip="NattoWok wasn't scanning">${watchedSegs}${onlineSegs}${future}</div></div>`);
+  }
+  const axis = `<div class="pres-row axis"><span class="pres-day"></span><div class="pres-axis"><span>00</span><span>06</span><span>12</span><span>18</span><span>24</span></div></div>`;
+  const key = `<div class="pres-key"><span><i class="sw online"></i>Online</span><span><i class="sw watched"></i>Offline</span><span><i class="sw"></i>Not scanning</span></div>`;
+  return `<div class="presence" role="img" aria-label="${esc(presenceSummary(d))}">${rows.join("")}${axis}</div>${key}`;
+}
+
+const PERSON_KINDS = ["phone", "tablet", "wearable"];
+
+function whosHome(report) {
+  if (!report) return "";
+  const people = report.devices.filter((d) => PERSON_KINDS.includes(d.kind) && (d.trusted || d.custom_name));
+  if (!people.length) {
+    return `<div class="panel"><h3>Who's home</h3><p>Phones are a good stand-in for people. Name your household's phones (or mark them trusted) and this shows who's home and since when.</p></div>`;
+  }
+  people.sort((a, b) => b.online - a.online || name(a).localeCompare(name(b)));
+  const chips = people.map((d) => {
+    const s = sessionsOf(d);
+    const last = s[s.length - 1];
+    const since = d.online && last ? `home since ${fmtWhen(last[0])}` : `away · last seen ${ago(d.last_seen)}`;
+    return `<a class="person ${d.online ? "home" : "away"}" data-device="${esc(d.id)}"><span class="pdot"></span><strong>${esc(name(d))}</strong><span>${esc(since)}</span></a>`;
+  }).join("");
+  return `<div class="panel"><h3>Who's home</h3><div class="people">${chips}</div><p class="hint">Based on when their phones are on the Wi-Fi. Phones that sleep deeply can briefly look away.</p></div>`;
+}
+
 function renderTimeline(events) {
   const el = $("#tab-timeline");
+  const home = whosHome(state.data?.report);
   if (!events.length) {
-    el.innerHTML = `<div class="empty"><h3>Nothing yet</h3><p>After your second scan, this shows devices that joined, left, changed address or opened new ports.</p></div>`;
+    el.innerHTML = `${home}<div class="empty"><h3>Nothing yet</h3><p>After your second scan, this shows devices that joined, left, changed address or opened new ports.</p></div>`;
     return;
   }
   let lastDay = "";
@@ -508,7 +636,7 @@ function renderTimeline(events) {
     const msg = e.device_id ? `<a data-device="${esc(e.device_id)}">${esc(e.message)}</a>` : esc(e.message);
     return `${head}<div class="event ${esc(e.kind)}"><span class="time">${esc(time)}</span><span class="ev-dot"></span><span>${msg}</span></div>`;
   }).join("");
-  el.innerHTML = html;
+  el.innerHTML = home + html;
   const recent = events.filter((e) => ["new_device", "new_finding", "new_open_port"].includes(e.kind) && Date.now() - new Date(e.at) < 86400000).length;
   $("#tab-timeline-count").textContent = recent || "";
 }
@@ -570,6 +698,8 @@ function renderDrawer(d) {
 
     ${exposed.length ? `<div class="section"><h4>Reachable from the internet</h4><ul class="ports">${exposed.map((m) => `<li><span class="mono">${m.external_port}</span><span>${esc(m.protocol)} → port ${m.internal_port}</span><span></span>${m.description ? `<span class="banner-text">Opened by "${esc(m.description)}"</span>` : ""}</li>`).join("")}</ul></div>` : ""}
     ${issues.length ? `<div class="section"><h4>Security</h4>${issues.map((f) => findingCard(f, [])).join("")}</div>` : ""}
+
+    ${!d.is_self ? `<div class="section"><h4>When it's around</h4><p style="font-size:14px;margin:0 0 8px">${esc(presenceSummary(d))}</p>${presenceChart(d)}</div>` : ""}
 
     <div class="section"><h4>Details</h4><dl class="kv">${kv.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl></div>
 
@@ -758,6 +888,17 @@ $("#export-btn").onclick = () => {
   $("#export-btn").setAttribute("aria-expanded", String(!m.hidden));
 };
 $("#scrim").onclick = closeDrawer;
+// One shared tooltip for chart segments.
+document.addEventListener("mousemove", (e) => {
+  const tip = $("#chart-tip");
+  const target = e.target.closest?.("[data-tip]");
+  if (!target) { tip.hidden = true; return; }
+  tip.textContent = target.dataset.tip;
+  tip.hidden = false;
+  const x = Math.min(e.clientX + 12, window.innerWidth - tip.offsetWidth - 8);
+  tip.style.left = `${x}px`;
+  tip.style.top = `${e.clientY + 14}px`;
+});
 $("#live-btn").onclick = () => setLive(!state.live.on);
 $("#live-stop").onclick = () => setLive(false);
 $("#search").oninput = (e) => { state.query = e.target.value.trim(); renderDevices(state.data?.report); };

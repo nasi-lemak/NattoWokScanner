@@ -216,6 +216,16 @@ pub struct Device {
     /// phone that rotated its private Wi-Fi address).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub possible_match: Option<PossibleMatch>,
+    /// When it was online recently (filled in for display only).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub presence: Vec<Session>,
+}
+
+/// A stretch of time a device was seen online in consecutive scans.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct Session {
+    pub from: DateTime<Utc>,
+    pub to: DateTime<Utc>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -262,6 +272,7 @@ impl Device {
             last_seen: None,
             is_new: false,
             possible_match: None,
+            presence: Vec::new(),
         }
     }
 

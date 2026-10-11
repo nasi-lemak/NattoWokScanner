@@ -182,10 +182,14 @@ fn asset(content_type: &'static str, body: &'static str) -> Response {
 async fn state_json(State(state): State<Shared>) -> Json<serde_json::Value> {
     let cur = current(&state);
     let events: Vec<_> = cur.inv.events.iter().rev().take(300).cloned().collect();
+    let since = Utc::now() - chrono::Duration::days(crate::store::PRESENCE_DAYS + 1);
+    let scan_log: Vec<_> = cur.inv.scan_log.iter().filter(|t| **t >= since).collect();
     let settings = state.settings.lock().unwrap().clone();
     let next_scan_at = next_scan_due(&state, &cur, &settings);
     Json(json!({
         "settings": settings,
+        "scan_log": scan_log,
+        "watch_gap_hours": crate::store::WATCH_GAP_HOURS,
         "next_scan_at": next_scan_at,
         "service_mode": state.service_mode,
         "version": env!("CARGO_PKG_VERSION"),
