@@ -148,7 +148,7 @@ async function refresh() {
 
 function schedulePoll() {
   clearTimeout(state.pollTimer);
-  const busy = state.data?.scan?.running || state.data?.doctor?.running;
+  const busy = state.data?.scan?.running || state.data?.doctor?.running || state.data?.speed?.running;
   state.pollTimer = setTimeout(refresh, busy ? 800 : 20000);
 }
 
@@ -200,7 +200,7 @@ function renderHeader(d) {
   const btn = $("#scan-btn");
   btn.disabled = scan.running;
   btn.querySelector(".scan-label").textContent = scan.running ? "Scanning…" : "Scan network";
-  const job = scan.running ? scan : d.doctor.running ? d.doctor : null;
+  const job = scan.running ? scan : d.doctor.running ? d.doctor : d.speed?.running ? d.speed : null;
   $("#progress").hidden = !job;
   if (job) {
     $("#progress-fill").style.width = `${Math.round(job.progress * 100)}%`;
@@ -450,6 +450,33 @@ const HOPS = [
   { id: "dns", label: "DNS", icon: "book" },
 ];
 
+function speedPanel(d) {
+  const job = d.speed || {};
+  const history = d.speed_history || [];
+  const last = history[0];
+  const button = `<button class="btn ${last ? "" : "primary"}" id="speed-btn" ${job.running ? "disabled" : ""}>${job.running ? "Testing…" : last ? "Test again" : "Test my speed"}</button>`;
+  const head = `<div class="speed-head"><div><h3>Speed and lag under load</h3>
+    <p class="hint">Measures download and upload speed, and how much delay grows while the line is busy (the reason calls stutter while someone streams). Uses Cloudflare's speed test: about 15 seconds and up to ~450 MB of data.</p></div>${button}</div>`;
+  if (job.error && !job.running) return `<div class="panel">${head}<p class="badge bad">${esc(job.error)}</p></div>`;
+  if (!last) return `<div class="panel">${head}</div>`;
+  const busyMs = Math.max(last.loaded_down_ms, last.loaded_up_ms);
+  const gradeClass = { A: "good", B: "good", C: "warn", D: "bad", F: "bad" }[last.grade];
+  const tiles = `<div class="speed-tiles">
+    <div><span class="label">Download</span><span class="big">${last.download_mbps}</span><span class="unit">Mbps</span></div>
+    <div><span class="label">Upload</span><span class="big">${last.upload_mbps}</span><span class="unit">Mbps</span></div>
+    <div><span class="label">Delay when idle</span><span class="big">${last.idle_ms}</span><span class="unit">ms</span></div>
+    <div><span class="label">Delay when busy</span><span class="big">${busyMs}</span><span class="unit">ms</span></div>
+    <div><span class="label">Responsiveness</span><span class="big"><span class="badge ${gradeClass}" style="font-size:20px;padding:2px 12px">${esc(last.grade)}</span></span><span class="unit">grade</span></div>
+  </div>`;
+  const older = history.slice(1, 6).map((r) => `<tr><td>${esc(new Date(r.at).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }))}</td><td>${r.download_mbps}</td><td>${r.upload_mbps}</td><td>${Math.max(r.loaded_down_ms, r.loaded_up_ms)} ms</td><td>${esc(r.grade)}</td></tr>`).join("");
+  return `<div class="panel">${head}${tiles}
+    <p>${esc(last.verdict)}</p>
+    ${last.advice ? `<p class="advice-box">💡 ${esc(last.advice)}</p>` : ""}
+    <p class="hint">Tested ${esc(ago(last.at))} · used ${Math.round(last.data_used_mb)} MB${last.location ? ` · Cloudflare ${esc(last.location)}` : ""}</p>
+    ${older ? `<table class="dns-table"><thead><tr><th>Earlier</th><th>↓ Mbps</th><th>↑ Mbps</th><th>Busy delay</th><th>Grade</th></tr></thead><tbody>${older}</tbody></table>` : ""}
+  </div>`;
+}
+
 function renderDoctor(d) {
   const el = $("#tab-doctor");
   const diag = d.diagnosis;
@@ -459,7 +486,7 @@ function renderDoctor(d) {
       <button class="btn primary" id="doctor-btn" ${running ? "disabled" : ""}>${running ? "Diagnosing…" : diag ? "Run again" : "Diagnose my connection"}</button>
     </div>`;
   if (!diag) {
-    el.innerHTML = intro + (d.doctor.error ? `<p class="badge bad">${esc(d.doctor.error)}</p>` : "");
+    el.innerHTML = intro + (d.doctor.error ? `<p class="badge bad">${esc(d.doctor.error)}</p>` : "") + speedPanel(d);
     return;
   }
   const byId = Object.fromEntries(diag.checks.map((c) => [c.id, c]));
@@ -490,7 +517,8 @@ function renderDoctor(d) {
     <div class="verdict ${diag.status}"><h2>${esc(diag.headline)}</h2><p>${esc(diag.summary)}</p></div>
     <div class="chain" style="grid-template-columns:repeat(${hops.length},1fr)">${chain}</div>
     ${checks}${dns}
-    <p class="note">Checked ${esc(ago(diag.at))}.</p>`;
+    <p class="note">Checked ${esc(ago(diag.at))}.</p>
+    ${speedPanel(d)}`;
 }
 
 // ---------- presence ----------
@@ -826,7 +854,7 @@ function setFilter(filter) {
 }
 
 document.addEventListener("click", async (e) => {
-  const t = e.target.closest("[data-device],[data-tab],[data-filter],[data-goto-filter],[data-goto-tab],[data-ignore],[data-unignore],[data-export],#trust-all,#doctor-btn");
+  const t = e.target.closest("[data-device],[data-tab],[data-filter],[data-goto-filter],[data-goto-tab],[data-ignore],[data-unignore],[data-export],#trust-all,#doctor-btn,#speed-btn");
   if (!e.target.closest(".menu")) {
     $("#export-menu").hidden = true;
     $("#settings-menu").hidden = true;
@@ -855,6 +883,7 @@ document.addEventListener("click", async (e) => {
     if (t.dataset.unignore) await api(`/api/findings/${encodeURIComponent(t.dataset.unignore)}/ignore`, { method: "DELETE" });
     if (t.id === "trust-all") { const r = await api("/api/trust-all", { method: "POST" }); toast(`Marked ${r.trusted} devices as trusted`); }
     if (t.id === "doctor-btn") await api("/api/doctor", { method: "POST" });
+    if (t.id === "speed-btn") await api("/api/speedtest", { method: "POST" });
     await refresh();
   } catch (err) { toast(err.message); }
 });

@@ -25,6 +25,8 @@ use crate::doctor::{self, Diagnosis};
 use crate::model::OpenPort;
 use crate::scan::{self, ScanOptions};
 use crate::settings::Settings;
+#[cfg(feature = "tls")]
+use crate::speedtest;
 use crate::store::{DeviceUpdate, Inventory, Workspace};
 use crate::{netinfo, notify, probe, report, security, wol};
 
@@ -88,6 +90,7 @@ pub struct AppState {
     scan: Arc<Mutex<Job>>,
     doctor: Arc<Mutex<Job>>,
     diagnosis: Mutex<Option<Diagnosis>>,
+    speed: Arc<Mutex<Job>>,
     scan_opts: ScanOptions,
     settings: Mutex<Settings>,
     /// Started by `nattowok service install` rather than by hand.
@@ -199,6 +202,8 @@ async fn state_json(State(state): State<Shared>) -> Json<serde_json::Value> {
         "events": events,
         "scan": *state.scan.lock().unwrap(),
         "doctor": *state.doctor.lock().unwrap(),
+        "speed": *state.speed.lock().unwrap(),
+        "speed_history": speed_history(&state),
         "diagnosis": *state.diagnosis.lock().unwrap(),
     }))
 }
@@ -327,6 +332,40 @@ async fn start_doctor(State(state): State<Shared>) -> ApiResult<StatusCode> {
         finish(&state.doctor, error);
     });
     Ok(StatusCode::ACCEPTED)
+}
+
+#[cfg(feature = "tls")]
+fn speed_history(state: &AppState) -> Vec<speedtest::SpeedResult> {
+    speedtest::load_history(state.workspace.root()).into_iter().rev().take(10).collect()
+}
+
+#[cfg(not(feature = "tls"))]
+fn speed_history(_: &AppState) -> Vec<()> {
+    Vec::new()
+}
+
+#[cfg(feature = "tls")]
+async fn start_speedtest(State(state): State<Shared>) -> ApiResult<StatusCode> {
+    begin(&state.speed)?;
+    tokio::spawn(async move {
+        let result = speedtest::run(&speedtest::SpeedOptions::default(), progress_into(state.speed.clone())).await;
+        let error = match result {
+            Ok(r) => speedtest::save_result(state.workspace.root(), &r).err().map(|e| format!("{e:#}")),
+            Err(e) => Some(format!("Speed test failed: {e:#}")),
+        };
+        finish(&state.speed, error);
+    });
+    Ok(StatusCode::ACCEPTED)
+}
+
+async fn start_speedtest_route(State(state): State<Shared>) -> ApiResult<StatusCode> {
+    #[cfg(feature = "tls")]
+    return start_speedtest(State(state)).await;
+    #[cfg(not(feature = "tls"))]
+    {
+        let _ = state;
+        Err(ApiError(StatusCode::NOT_IMPLEMENTED, "this build of NattoWok has no speed test".into()))
+    }
 }
 
 async fn update_device(
@@ -483,6 +522,7 @@ pub fn router(state: Shared) -> Router {
         .route("/api/state", get(state_json))
         .route("/api/scan", post(start_scan))
         .route("/api/doctor", post(start_doctor))
+        .route("/api/speedtest", post(start_speedtest_route))
         .route("/api/trust-all", post(trust_all))
         .route("/api/devices/{id}", patch(update_device).delete(forget_device))
         .route("/api/devices/{id}/wake", post(wake_device))
@@ -529,6 +569,7 @@ pub async fn serve(opts: ServeOptions) -> Result<()> {
         scan: Arc::default(),
         doctor: Arc::default(),
         diagnosis: Mutex::new(None),
+        speed: Arc::default(),
         scan_opts: opts.scan_opts,
         settings: Mutex::new(settings),
         service_mode: opts.service_mode,
@@ -603,6 +644,7 @@ mod tests {
             scan: Arc::default(),
             doctor: Arc::default(),
             diagnosis: Mutex::new(None),
+            speed: Arc::default(),
             scan_opts: ScanOptions::default(),
             token: "secret".into(),
             remote: false,

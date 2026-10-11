@@ -66,6 +66,14 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Test download/upload speed and lag under load (uses Cloudflare's speed test)
+    Speed {
+        #[arg(long)]
+        json: bool,
+        /// Show past results instead of running a test
+        #[arg(long)]
+        history: bool,
+    },
     /// Check ~1,100 ports on one device
     Ports {
         /// Device name, IP or MAC
@@ -344,6 +352,72 @@ async fn run(cli: Cli) -> Result<()> {
                 }
             }
             println!();
+            Ok(())
+        }
+        #[cfg(not(feature = "tls"))]
+        Command::Speed { .. } => bail!("this build of NattoWok has no speed test (built without the `tls` feature)"),
+        #[cfg(feature = "tls")]
+        Command::Speed { json, history } => {
+            use nattowok::speedtest;
+            if history {
+                let past = speedtest::load_history(&data_dir);
+                if json {
+                    println!("{}", serde_json::to_string_pretty(&past)?);
+                } else if past.is_empty() {
+                    println!("No speed tests yet. Run `nattowok speed`.");
+                }
+                for r in past.iter().filter(|_| !json) {
+                    println!(
+                        "  {}  ↓ {:>7.1} Mbps  ↑ {:>7.1} Mbps  idle {:>5.1} ms  busy {:>6.1} ms  grade {:?}",
+                        r.at.with_timezone(&chrono::Local).format("%Y-%m-%d %H:%M"),
+                        r.download_mbps,
+                        r.upload_mbps,
+                        r.idle_ms,
+                        r.loaded_down_ms.max(r.loaded_up_ms),
+                        r.grade
+                    );
+                }
+                return Ok(());
+            }
+            if !json {
+                eprintln!(
+                    "Testing with Cloudflare's speed test. This takes about 15 seconds and uses up to about 450 MB of data (more on multi-gigabit lines)."
+                );
+            }
+            let r = speedtest::run(&speedtest::SpeedOptions::default(), terminal_progress()).await?;
+            speedtest::save_result(&data_dir, &r)?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&r)?);
+                return Ok(());
+            }
+            let grade = format!("{:?}", r.grade);
+            let grade = match r.grade {
+                speedtest::Grade::A | speedtest::Grade::B => paint.green(&grade),
+                speedtest::Grade::C => paint.yellow(&grade),
+                _ => paint.red(&grade),
+            };
+            println!("\n  {}  {:.1} Mbps", paint.bold("Download"), r.download_mbps);
+            println!("  {}    {:.1} Mbps", paint.bold("Upload"), r.upload_mbps);
+            println!(
+                "  {}   {:.1} ms idle, {:.1} ms while downloading, {:.1} ms while uploading",
+                paint.bold("Latency"),
+                r.idle_ms,
+                r.loaded_down_ms,
+                r.loaded_up_ms
+            );
+            println!("  {}  {grade} (how much lag grows when the line is busy)", paint.bold("Responsiveness"));
+            println!("\n  {}", r.verdict);
+            if let Some(a) = &r.advice {
+                println!("  {} {a}", paint.blue("→"));
+            }
+            println!(
+                "  {}\n",
+                paint.dim(&format!(
+                    "Used {:.0} MB{}",
+                    r.data_used_mb,
+                    r.location.as_deref().map(|l| format!(" · server: Cloudflare {l}")).unwrap_or_default()
+                ))
+            );
             Ok(())
         }
         Command::Ports { device, json } => {

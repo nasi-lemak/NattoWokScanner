@@ -304,6 +304,15 @@ textarea { min-height: 70px; resize: vertical; }
 #settings-btn { position: relative; }
 .dot-on { position: absolute; top: 6px; right: 6px; width: 8px; height: 8px; border-radius: 50%; background: var(--good); }
 
+.speed-head { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+.speed-head > div { flex: 1 1 300px; }
+.speed-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin: 12px 0; }
+.speed-tiles > div { background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; display: flex; flex-direction: column; }
+.speed-tiles .label { color: var(--muted); font-size: 12px; }
+.speed-tiles .big { font-size: 26px; font-weight: 700; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.speed-tiles .unit { color: var(--muted); font-size: 12px; }
+.advice-box { background: var(--surface-2); border-radius: 8px; padding: 8px 10px; }
+
 /* Presence */
 .presence { display: grid; gap: 4px; }
 .pres-row { display: grid; grid-template-columns: 44px 1fr; align-items: center; gap: 8px; }

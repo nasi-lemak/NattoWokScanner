@@ -4,4 +4,5 @@ set -e
 cd "$(dirname "$0")/.."
 cargo fmt --check
 cargo clippy --all-targets -- -D warnings
+cargo clippy --all-targets --no-default-features -- -D warnings
 cargo test

@@ -25,6 +25,7 @@ NattoWok is a network scanner in the spirit of Fing. It's built around a differe
 | Not knowing what's reachable from the internet | NattoWok asks your router which ports apps and devices **opened to the internet** (UPnP), and rates each one: remote desktop and databases are serious, game and voice-chat ports are normal. It also spots when your provider shares your public address, so forwards can't actually be reached. |
 | Only finding out about a new device when you happen to look | `nattowok service install` keeps NattoWok running in the background (starting at log-in), **scanning on a schedule and sending desktop notifications** for new devices and security issues. No admin rights needed. |
 | "Is that device usually here?" | Every device gets a **week view of when it was online**, with a plain summary ("usually online between 18:00 and 08:00"). Times NattoWok wasn't scanning are shown as such, never as "offline". A **Who's home** panel (and `nattowok home`) uses household phones as a stand-in for people. |
+| Speed tests that ignore the thing you actually feel | The **speed test** (`nattowok speed`, or the Internet doctor tab) measures download and upload *and how much delay grows while the line is busy*: the "bufferbloat" behind laggy calls when someone streams. It grades it A–F and names the router setting that fixes it (Smart Queue / SQM), with speeds to set. Results are kept, so you can see whether your provider delivers. |
 | Wanting automation | `nattowok watch --on-new-device "…"` runs your command when something joins (send a notification, log it, turn on a light). |
 
 ### Devices explain themselves
@@ -65,6 +66,7 @@ nattowok scan --target 10.0.0.0/24  # scan a specific range (up to /20)
 nattowok scan --no-ports --json     # quick scan, machine-readable
 nattowok devices                    # everything known on this network, online or not
 nattowok doctor                     # why is the internet slow?
+nattowok speed                      # speed + lag under load; --history for past results
 nattowok ports "Hallway camera"     # check ~1,100 ports on one device
 nattowok label 192.168.1.52 --name "Hallway camera" --trust --tag outdoor
 nattowok live                       # watch devices answer in real time; unplug one to find it
@@ -124,7 +126,7 @@ Data lives in your OS data folder (`~/.local/share/nattowok`, `~/Library/Applica
 
 ## Privacy and safety
 
-- **Local only.** The only traffic leaving your network comes from the Internet doctor: a few TCP connects and DNS queries to Cloudflare, Google and Quad9, plus Google's standard connectivity check. And only when you run it.
+- **Local only.** Only two features talk to the internet, and only when you run them: the Internet doctor (a few TCP connects and DNS queries to Cloudflare, Google and Quad9, plus Google's standard connectivity check) and the speed test (Cloudflare's public speed-test service). Results stay on your computer.
 - **The dashboard listens on localhost by default.** Every API call needs a random per-run token embedded in the page, which other websites can't read. Requests whose `Host` isn't localhost are refused, which blocks DNS-rebinding attacks. `--listen 0.0.0.0:7878` exposes it on purpose; access then requires a key printed in the terminal.
 - **Polite scanning.** NattoWok only connects. It never logs in, never tries passwords, and only follows UPnP description URLs that point back at the device that announced them.
 - **Router exposure is read-only.** NattoWok asks the router for its port-forwarding list; it never adds or removes mappings.
@@ -135,7 +137,7 @@ Data lives in your OS data folder (`~/.local/share/nattowok`, `~/Library/Applica
 - IPv4 only for discovery. On networks bigger than /22, the /24 around you is scanned unless you pass `--target`.
 - Identification is a well-reasoned guess. Devices that reveal nothing about themselves stay "Unknown" rather than being labelled wrongly. Give them a name and NattoWok will remember it.
 - Wi-Fi access-point isolation (common on guest networks) hides other devices from any scanner.
-- The doctor measures latency, loss and DNS speed, not bandwidth. Use a speed test for that.
+- The speed test stops early once it has moved about 450 MB, enough for an accurate number on most home connections. Multi-gigabit lines still use somewhat more.
 - Wi-Fi details come from `nmcli` (NetworkManager) on Linux, `system_profiler` on macOS and `netsh` on Windows. Recent macOS versions hide the network name unless the app has Location access; signal and channel still work. Windows output is parsed in English.
 
 ## Development
@@ -157,6 +159,7 @@ Layout:
 | `src/security.rs` | Plain-language findings and health score |
 | `src/store.rs` | Per-network inventory, change tracking, merging |
 | `src/matching.rs` | Recognising devices that return under a new hardware address |
+| `src/speedtest.rs` | Speed and bufferbloat test |
 | `src/doctor.rs`, `src/wifi.rs` | Internet doctor, Wi-Fi signal and channel readings |
 | `src/upnp.rs` | Router port-forwarding (exposure) queries |
 | `src/notify.rs`, `src/service.rs`, `src/settings.rs` | Desktop notifications, background service, preferences |

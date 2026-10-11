@@ -19,6 +19,8 @@ pub mod scan;
 pub mod security;
 pub mod service;
 pub mod settings;
+#[cfg(feature = "tls")]
+pub mod speedtest;
 pub mod ssdp;
 pub mod store;
 pub mod upnp;
