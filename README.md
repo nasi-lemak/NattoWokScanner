@@ -29,6 +29,7 @@ NattoWok is a network scanner in the spirit of Fing. It's built around a differe
 | "Turn off UPnP in your router"… but where? | NattoWok recognises your router (ASUS, TP-Link, Deco, Netgear, Orbi, eero, Google/Nest, FRITZ!Box, Linksys, UniFi, MikroTik, OpenWrt, D-Link) and every fix comes with **where that setting lives on your model**, plus an "Open router settings" button. Provider-supplied routers get clear general steps. `nattowok router` lists them all. |
 | Cameras and smart plugs on the same network as your laptop | Flags gadgets that rarely get security updates sharing your main network, and walks you through moving them to the router's **guest/IoT network**. |
 | Reviewing a long list of devices is a chore | A **guided review** shows one device at a time: *Yes, it's mine* (name it as you go), *Not sure, help me find it* (switches on Live mode), *I don't recognise it* (with what to do next), or *Skip*. If NattoWok guessed the type wrong, pick the right one; your choice sticks across scans. |
+| Alerts that only reach you at your desk | **Phone alerts** through ntfy (free app, no account), Telegram, Discord or any webhook such as Home Assistant: `nattowok alerts ntfy`, or the bell menu. Tokens are kept in a settings file only you can read and are never shown in the dashboard. |
 | Wanting automation | `nattowok watch --on-new-device "…"` runs your command when something joins (send a notification, log it, turn on a light). |
 
 ### Devices explain themselves
@@ -118,6 +119,19 @@ nattowok service uninstall
 
 This installs a per-user service (a systemd user unit on Linux, a LaunchAgent on macOS, a log-on task on Windows) that runs the dashboard and scans on schedule. Opening `nattowok` afterwards just opens the running dashboard. The interval and notifications can also be changed from the bell menu in the dashboard. Notifications use what your OS already has: `notify-send` on Linux, Notification Center on macOS, toast notifications on Windows.
 
+### Alerts on your phone
+
+```sh
+nattowok alerts ntfy                 # makes a private ntfy topic; subscribe to it in the ntfy app
+nattowok alerts telegram --token 123456:ABC… --chat 987654321
+nattowok alerts discord https://discord.com/api/webhooks/…
+nattowok alerts webhook http://homeassistant.local:8123/api/webhook/nattowok
+nattowok alerts test                 # send a test to each
+nattowok alerts list / remove 2
+```
+
+Alerts go out for new devices, new open ports and new security issues found by automatic scans (the background service or the dashboard's "Scan automatically") and by `nattowok watch`. Only the alert text is sent, to the service you choose.
+
 ### Run your own command on changes
 
 ```sh
@@ -142,7 +156,7 @@ Data lives in your OS data folder (`~/.local/share/nattowok`, `~/Library/Applica
 
 ## Privacy and safety
 
-- **Local only.** Only three features talk to the internet, and only when you run them: the Internet doctor (a few TCP connects and DNS queries to Cloudflare, Google and Quad9, plus Google's standard connectivity check), the speed test (Cloudflare's public speed-test service) and `update-vendors` (downloads the IEEE's public registry). Nothing about your network is sent anywhere, and results stay on your computer.
+- **Local only.** Phone alerts, if you set them up, send their text to the service you chose. Apart from that, only three features talk to the internet, and only when you run them: the Internet doctor (a few TCP connects and DNS queries to Cloudflare, Google and Quad9, plus Google's standard connectivity check), the speed test (Cloudflare's public speed-test service) and `update-vendors` (downloads the IEEE's public registry). Nothing about your network is sent anywhere, and results stay on your computer.
 - **The dashboard listens on localhost by default.** Every API call needs a random per-run token embedded in the page, which other websites can't read. Requests whose `Host` isn't localhost are refused, which blocks DNS-rebinding attacks. `--listen 0.0.0.0:7878` exposes it on purpose; access then requires a key printed in the terminal.
 - **Polite scanning.** NattoWok only connects. It never logs in, never tries passwords, and only follows UPnP description URLs that point back at the device that announced them.
 - **The anonymised export is yours to share or not.** It removes names, notes and tags you added, IP addresses, the unique half of every hardware address (all of it for private addresses), your Wi-Fi name and your public address, and turns personal words in device-announced names into `*`. Nothing is uploaded; read the file before sending it anywhere.
@@ -180,6 +194,7 @@ Layout:
 | `src/speedtest.rs`, `src/fetch.rs` | Speed and bufferbloat test; small HTTPS client |
 | `src/doctor.rs`, `src/wifi.rs` | Internet doctor, Wi-Fi signal and channel readings |
 | `src/upnp.rs` | Router port-forwarding (exposure) queries |
+| `src/alerts.rs` | Phone alerts (ntfy, Telegram, Discord, webhooks) |
 | `src/notify.rs`, `src/service.rs`, `src/settings.rs` | Desktop notifications, background service, preferences |
 | `src/web.rs`, `web/` | Dashboard server and UI (embedded at compile time) |
 | `src/main.rs` | CLI |

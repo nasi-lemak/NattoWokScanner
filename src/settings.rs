@@ -14,6 +14,9 @@ pub struct Settings {
     /// Desktop notifications for new devices and security issues found by
     /// automatic scans.
     pub notifications: bool,
+    /// Phone alerts for the same events (contains tokens, so the file is
+    /// readable only by its owner).
+    pub alerts: Vec<crate::alerts::AlertTarget>,
 }
 
 impl Settings {
@@ -27,7 +30,15 @@ impl Settings {
 
     pub fn save(&self, root: &Path) -> Result<()> {
         std::fs::create_dir_all(root).with_context(|| format!("couldn't create {}", root.display()))?;
-        std::fs::write(Self::path(root), serde_json::to_vec_pretty(self)?)?;
+        let path = Self::path(root);
+        let tmp = path.with_extension("json.tmp");
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create(true).truncate(true);
+        // Created private from the start: it can hold alert tokens.
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut opts, 0o600);
+        std::io::Write::write_all(&mut opts.open(&tmp)?, &serde_json::to_vec_pretty(self)?)?;
+        std::fs::rename(&tmp, &path)?;
         Ok(())
     }
 }
@@ -40,9 +51,15 @@ mod tests {
     fn roundtrips_and_defaults() {
         let dir = std::env::temp_dir().join(format!("nattowok-settings-{}", std::process::id()));
         assert_eq!(Settings::load(&dir), Settings::default());
-        let s = Settings { auto_scan_minutes: 15, notifications: true };
+        let s = Settings { auto_scan_minutes: 15, notifications: true, alerts: vec![] };
         s.save(&dir).unwrap();
         assert_eq!(Settings::load(&dir), s);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(dir.join("settings.json")).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

@@ -143,6 +143,11 @@ enum Command {
         #[arg(long)]
         notify: bool,
     },
+    /// Get alerts on your phone (ntfy, Telegram, Discord or a webhook)
+    Alerts {
+        #[command(subcommand)]
+        action: AlertAction,
+    },
     /// Keep NattoWok running in the background (starts when you log in),
     /// scanning on a schedule and notifying you about changes
     Service {
@@ -169,6 +174,32 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum AlertAction {
+    /// Show where alerts go
+    List,
+    /// Send alerts to ntfy (free phone app). Without a topic, a private one is made for you
+    Ntfy {
+        /// A topic name or full address like https://ntfy.sh/my-topic
+        topic: Option<String>,
+    },
+    /// Send alerts to a Telegram chat through your own bot (from @BotFather)
+    Telegram {
+        #[arg(long)]
+        token: String,
+        #[arg(long)]
+        chat: String,
+    },
+    /// Send alerts to a Discord channel webhook
+    Discord { webhook_url: String },
+    /// POST alerts as JSON to any address (Home Assistant, Node-RED, your script)
+    Webhook { url: String },
+    /// Stop sending to the target with this number (from `alerts list`)
+    Remove { number: usize },
+    /// Send a test alert to every target
+    Test,
 }
 
 #[derive(Subcommand)]
@@ -599,6 +630,8 @@ async fn run(cli: Cli) -> Result<()> {
                         if notify {
                             nattowok::notify::send_for(&events).await;
                         }
+                        let targets = nattowok::settings::Settings::load(&data_dir).alerts;
+                        nattowok::alerts::send_all(&targets, &events).await;
                     }
                     Err(e) => eprintln!("scan failed: {e:#}"),
                 }
@@ -624,6 +657,61 @@ async fn run(cli: Cli) -> Result<()> {
                 }
                 None => print!("{text}"),
             }
+            Ok(())
+        }
+        Command::Alerts { action } => {
+            use nattowok::alerts::{self, AlertTarget};
+            let mut settings = nattowok::settings::Settings::load(&data_dir);
+            let target = match action {
+                AlertAction::List => {
+                    if settings.alerts.is_empty() {
+                        println!("No phone alerts set up. Try `nattowok alerts ntfy` (free app, no account).");
+                    }
+                    for (i, t) in settings.alerts.iter().enumerate() {
+                        println!("  {}. {}", i + 1, t.describe());
+                    }
+                    return Ok(());
+                }
+                AlertAction::Remove { number } => {
+                    anyhow::ensure!(number >= 1 && number <= settings.alerts.len(), "there's no alert target {number}");
+                    let removed = settings.alerts.remove(number - 1);
+                    settings.save(&data_dir)?;
+                    println!("Removed {}.", removed.describe());
+                    return Ok(());
+                }
+                AlertAction::Test => {
+                    anyhow::ensure!(!settings.alerts.is_empty(), "no alert targets yet");
+                    for t in &settings.alerts {
+                        match alerts::send(t, "NattoWok test", "Alerts from NattoWok will arrive here.", &[]).await {
+                            Ok(()) => println!("  {} {}", paint.green("✓"), t.describe()),
+                            Err(e) => println!("  {} {e:#}", paint.red("✗")),
+                        }
+                    }
+                    return Ok(());
+                }
+                AlertAction::Ntfy { topic } => AlertTarget::Ntfy {
+                    url: match topic {
+                        None => alerts::random_ntfy_url(),
+                        Some(t) if t.starts_with("http") => t,
+                        Some(t) => format!("https://ntfy.sh/{t}"),
+                    },
+                },
+                AlertAction::Telegram { token, chat } => AlertTarget::Telegram { bot_token: token, chat_id: chat },
+                AlertAction::Discord { webhook_url } => AlertTarget::Discord { webhook_url },
+                AlertAction::Webhook { url } => AlertTarget::Webhook { url },
+            };
+            target.validate()?;
+            if let AlertTarget::Ntfy { url } = &target {
+                println!(
+                    "Install the ntfy app (or open {url} in a browser) and subscribe to this address:\n\n    {url}\n"
+                );
+                println!("Keep it private: anyone who knows the address can read the alerts.");
+            }
+            settings.alerts.push(target);
+            settings.save(&data_dir)?;
+            println!(
+                "Saved. Alerts are sent for new devices, new open ports and new security issues found by automatic scans (`nattowok service install`) or `nattowok watch`. Try `nattowok alerts test`."
+            );
             Ok(())
         }
         Command::Service { action } => match action {

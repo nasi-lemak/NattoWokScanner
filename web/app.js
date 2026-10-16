@@ -183,6 +183,12 @@ function renderSettings(d) {
     $("#set-notify").checked = !!s.notifications;
   }
   $("#settings-dot").hidden = !s.auto_scan_minutes;
+  const alerts = s.alerts || [];
+  $("#alert-list").innerHTML = alerts.length
+    ? alerts.map((a, i) => `<li><span>${esc(a)}</span><button class="btn small ghost" data-alert-remove="${i}" aria-label="Remove">✕</button></li>`).join("")
+      + `<li><button class="btn small" id="alert-test">Send a test alert</button></li>`
+      + (s.auto_scan_minutes ? "" : `<li class="hint">Alerts come from automatic scans; turn on "Scan automatically" above.</li>`)
+    : `<li class="hint">None yet.</li>`;
   $("#set-bg").innerHTML = d.service_mode
     ? "✓ NattoWok runs in the background, so it keeps watching after you close this tab and starts again when you log in."
     : "Automatic scans run while NattoWok is open. To keep watching after you close it, and after restarts, run <code>nattowok service install</code> once.";
@@ -1049,6 +1055,50 @@ async function saveSettings(patch) {
 $("#set-auto").onchange = (e) => saveSettings({ auto_scan_minutes: Number(e.target.value) }).then(() =>
   toast(Number(e.target.value) ? "Automatic scans on" : "Automatic scans off"));
 $("#set-notify").onchange = (e) => saveSettings({ notifications: e.target.checked });
+const ALERT_FIELDS = {
+  ntfy: `<p class="hint">Install the free ntfy app, then subscribe to the address below. Keep it private: anyone who knows it can read your alerts.</p>
+    <input id="af-url" class="tags-input" aria-label="ntfy address">`,
+  telegram: `<p class="hint">Create a bot with @BotFather, send it a message, then enter its token and your chat id.</p>
+    <input id="af-token" class="tags-input" placeholder="Bot token (123456:ABC…)" aria-label="Bot token">
+    <input id="af-chat" class="tags-input" placeholder="Chat id" aria-label="Chat id">`,
+  discord: `<p class="hint">Channel settings → Integrations → Webhooks → New Webhook → Copy URL.</p>
+    <input id="af-url" class="tags-input" placeholder="https://discord.com/api/webhooks/…" aria-label="Discord webhook address">`,
+  webhook: `<p class="hint">NattoWok POSTs JSON with a title, message and the events. For Home Assistant, use an automation with a webhook trigger.</p>
+    <input id="af-url" class="tags-input" placeholder="http://homeassistant.local:8123/api/webhook/…" aria-label="Webhook address">`,
+};
+$("#alert-kind").onchange = (e) => {
+  const kind = e.target.value;
+  $("#alert-fields").innerHTML = kind ? `${ALERT_FIELDS[kind]}<button class="btn small primary" id="alert-save">Save</button>` : "";
+  if (kind === "ntfy") {
+    const bytes = crypto.getRandomValues(new Uint8Array(10));
+    $("#af-url").value = `https://ntfy.sh/nattowok-${[...bytes].map((b) => b.toString(16).padStart(2, "0")).join("")}`;
+  }
+  $("#alert-save")?.addEventListener("click", async () => {
+    const target = kind === "telegram"
+      ? { kind, bot_token: $("#af-token").value.trim(), chat_id: $("#af-chat").value.trim() }
+      : kind === "discord" ? { kind, webhook_url: $("#af-url").value.trim() } : { kind, url: $("#af-url").value.trim() };
+    try {
+      await api("/api/alerts", { method: "POST", body: JSON.stringify(target) });
+      $("#alert-kind").value = "";
+      $("#alert-fields").innerHTML = "";
+      toast("Saved. Send a test to check it arrives.");
+      await refresh();
+    } catch (err) { toast(err.message); }
+  });
+};
+$("#alert-list").onclick = async (e) => {
+  const remove = e.target.closest("[data-alert-remove]");
+  try {
+    if (remove) {
+      await api(`/api/alerts/${remove.dataset.alertRemove}`, { method: "DELETE" });
+      await refresh();
+    } else if (e.target.id === "alert-test") {
+      const results = await api("/api/alerts/test", { method: "POST" });
+      const failed = results.filter((r) => r.error);
+      toast(failed.length ? failed.map((r) => r.error).join(" · ") : "Test sent. Check your phone.");
+    }
+  } catch (err) { toast(err.message); }
+};
 $("#set-test").onclick = async () => {
   try { await api("/api/notify-test", { method: "POST" }); toast("Test notification sent"); } catch (e) { toast(e.message); }
 };

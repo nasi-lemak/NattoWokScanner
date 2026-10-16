@@ -319,6 +319,13 @@ textarea { min-height: 70px; resize: vertical; }
 .router-steps p { margin: 6px 0; }
 .router-steps .btn { margin-top: 4px; }
 
+.alert-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 4px; }
+.alert-list li { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 13px; }
+.alert-add { display: grid; gap: 6px; }
+.alert-add select { padding: 7px 9px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); }
+.alert-add .hint { margin: 0; }
+.settings-panel { max-height: 80vh; overflow-y: auto; }
+
 /* Guided review */
 .review { width: min(560px, calc(100vw - 32px)); border: 1px solid var(--border); border-radius: 16px; padding: 18px 20px; background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
 .review::backdrop { background: rgba(0, 0, 0, .35); }

@@ -1,6 +1,7 @@
 //! NattoWok Scanner: a privacy-first network scanner that explains what it
 //! finds. Everything runs locally; nothing leaves your network.
 
+pub mod alerts;
 pub mod dns;
 pub mod doctor;
 #[cfg(feature = "tls")]

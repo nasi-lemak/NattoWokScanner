@@ -28,7 +28,7 @@ use crate::settings::Settings;
 #[cfg(feature = "tls")]
 use crate::speedtest;
 use crate::store::{DeviceUpdate, Inventory, Workspace};
-use crate::{netinfo, notify, probe, report, security, wol};
+use crate::{alerts, netinfo, notify, probe, report, security, wol};
 
 const INDEX: &str = include_str!("../web/index.html");
 const APP_JS: &str = include_str!("../web/app.js");
@@ -189,8 +189,14 @@ async fn state_json(State(state): State<Shared>) -> Json<serde_json::Value> {
     let scan_log: Vec<_> = cur.inv.scan_log.iter().filter(|t| **t >= since).collect();
     let settings = state.settings.lock().unwrap().clone();
     let next_scan_at = next_scan_due(&state, &cur, &settings);
+    // Alert targets hold tokens; the page only ever sees descriptions.
+    let settings_view = json!({
+        "auto_scan_minutes": settings.auto_scan_minutes,
+        "notifications": settings.notifications,
+        "alerts": settings.alerts.iter().map(|a| a.describe()).collect::<Vec<_>>(),
+    });
     Json(json!({
-        "settings": settings,
+        "settings": settings_view,
         "scan_log": scan_log,
         "watch_gap_hours": crate::store::WATCH_GAP_HOURS,
         "next_scan_at": next_scan_at,
@@ -252,8 +258,12 @@ fn spawn_scan(state: Shared, automatic: bool) -> ApiResult<()> {
             Err(e) => Some(format!("{e:#}")),
         };
         finish(&state.scan, error);
-        if automatic && state.settings.lock().unwrap().notifications {
-            notify::send_for(&events).await;
+        if automatic {
+            let settings = state.settings.lock().unwrap().clone();
+            if settings.notifications {
+                notify::send_for(&events).await;
+            }
+            alerts::send_all(&settings.alerts, &events).await;
         }
     });
     Ok(())
@@ -304,6 +314,35 @@ async fn update_settings(State(state): State<Shared>, Json(update): Json<Setting
     }
     s.save(state.workspace.root())?;
     Ok(Json(s.clone()))
+}
+
+async fn add_alert(State(state): State<Shared>, Json(target): Json<alerts::AlertTarget>) -> ApiResult<StatusCode> {
+    target.validate().map_err(|e| ApiError(StatusCode::BAD_REQUEST, format!("{e:#}")))?;
+    let mut s = state.settings.lock().unwrap();
+    s.alerts.push(target);
+    s.save(state.workspace.root())?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn remove_alert(State(state): State<Shared>, Path(index): Path<usize>) -> ApiResult<StatusCode> {
+    let mut s = state.settings.lock().unwrap();
+    if index >= s.alerts.len() {
+        return Err(not_found("alert"));
+    }
+    s.alerts.remove(index);
+    s.save(state.workspace.root())?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+/// Sends a test to every alert target and reports each result.
+async fn test_alerts(State(state): State<Shared>) -> Json<Vec<serde_json::Value>> {
+    let targets = state.settings.lock().unwrap().alerts.clone();
+    let mut out = Vec::new();
+    for t in &targets {
+        let r = alerts::send(t, "NattoWok test", "Alerts from NattoWok will arrive here.", &[]).await;
+        out.push(json!({ "target": t.describe(), "error": r.err().map(|e| format!("{e:#}")) }));
+    }
+    Json(out)
 }
 
 async fn test_notification() -> ApiResult<StatusCode> {
@@ -535,6 +574,9 @@ pub fn router(state: Shared) -> Router {
         .route("/api/export/{format}", get(export))
         .route("/api/settings", patch(update_settings))
         .route("/api/notify-test", post(test_notification))
+        .route("/api/alerts", post(add_alert))
+        .route("/api/alerts/test", post(test_alerts))
+        .route("/api/alerts/{index}", axum::routing::delete(remove_alert))
         .layer(middleware::from_fn_with_state(state.clone(), guard))
         .with_state(state)
 }

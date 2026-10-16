@@ -85,54 +85,82 @@ pub fn parse_response(raw: &[u8]) -> Result<Response> {
     Ok(Response { status, headers, body })
 }
 
+/// One HTTPS request; returns the raw response, refusing more than `max_bytes`.
+async fn request(
+    tls: &TlsConnector,
+    method: &str,
+    url: &str,
+    extra: &[(&str, &str)],
+    body: &[u8],
+    max_bytes: usize,
+) -> Result<Response> {
+    let (host, port, path) = split_url(url)?;
+    let tcp = tokio::time::timeout(Duration::from_secs(10), TcpStream::connect((host.as_str(), port)))
+        .await
+        .context("timed out connecting")??;
+    let mut stream = tls.connect(ServerName::try_from(host.clone())?, tcp).await?;
+    let mut head = format!(
+        "{method} {path} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: NattoWokScanner/{}\r\nAccept: */*\r\nConnection: close\r\n",
+        env!("CARGO_PKG_VERSION")
+    );
+    for (k, v) in extra {
+        head.push_str(&format!("{k}: {v}\r\n"));
+    }
+    if method != "GET" {
+        head.push_str(&format!("Content-Length: {}\r\n", body.len()));
+    }
+    head.push_str("\r\n");
+    stream.write_all(head.as_bytes()).await?;
+    stream.write_all(body).await?;
+    let mut raw = Vec::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    let read = async {
+        loop {
+            let n = match stream.read(&mut buf).await {
+                Ok(0) => break,
+                Ok(n) => n,
+                // Many servers close TLS without a close_notify; we have the data.
+                Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
+                Err(e) => return Err(anyhow::Error::from(e)),
+            };
+            raw.extend_from_slice(&buf[..n]);
+            if raw.len() > max_bytes + 64 * 1024 {
+                bail!("the response is larger than expected");
+            }
+        }
+        Ok(())
+    };
+    tokio::time::timeout(Duration::from_secs(120), read).await.context("timed out")??;
+    parse_response(&raw)
+}
+
 /// Downloads `url` (following up to 3 redirects), refusing bodies over `max_bytes`.
 pub async fn get(url: &str, max_bytes: usize) -> Result<Vec<u8>> {
     let tls = connector()?;
     let mut url = url.to_string();
     for _ in 0..4 {
-        let (host, port, path) = split_url(&url)?;
-        let tcp = tokio::time::timeout(Duration::from_secs(10), TcpStream::connect((host.as_str(), port)))
-            .await
-            .context("timed out connecting")??;
-        let mut stream = tls.connect(ServerName::try_from(host.clone())?, tcp).await?;
-        let req = format!(
-            "GET {path} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: NattoWokScanner/{}\r\nAccept: */*\r\nConnection: close\r\n\r\n",
-            env!("CARGO_PKG_VERSION")
-        );
-        stream.write_all(req.as_bytes()).await?;
-        let mut raw = Vec::new();
-        let mut buf = vec![0u8; 64 * 1024];
-        let read = async {
-            loop {
-                let n = match stream.read(&mut buf).await {
-                    Ok(0) => break,
-                    Ok(n) => n,
-                    // Many servers close TLS without a close_notify; we have the data.
-                    Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
-                    Err(e) => return Err(anyhow::Error::from(e)),
-                };
-                raw.extend_from_slice(&buf[..n]);
-                if raw.len() > max_bytes + 64 * 1024 {
-                    bail!("the download is larger than expected");
-                }
-            }
-            Ok(())
-        };
-        tokio::time::timeout(Duration::from_secs(120), read).await.context("download timed out")??;
-        let Response { status, headers, body } = parse_response(&raw)?;
+        let Response { status, headers, body } = request(&tls, "GET", &url, &[], &[], max_bytes).await?;
         match status {
             200 => return Ok(body),
             301 | 302 | 303 | 307 | 308 => {
+                let (host, _, _) = split_url(&url)?;
                 let location = headers.iter().find(|(k, _)| k == "location").map(|(_, v)| v.clone());
                 url = location.context("redirect without a location")?;
                 if url.starts_with('/') {
                     url = format!("https://{host}{url}");
                 }
             }
-            other => bail!("{host} answered {other}"),
+            other => bail!("{} answered {other}", split_url(&url)?.0),
         }
     }
     bail!("too many redirects")
+}
+
+/// Sends a JSON body with POST; returns the status and response body.
+pub async fn post_json(url: &str, json: &str) -> Result<(u16, String)> {
+    let tls = connector()?;
+    let r = request(&tls, "POST", url, &[("Content-Type", "application/json")], json.as_bytes(), 256 * 1024).await?;
+    Ok((r.status, String::from_utf8_lossy(&r.body).into_owned()))
 }
 
 #[cfg(test)]
