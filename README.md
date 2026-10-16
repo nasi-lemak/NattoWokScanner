@@ -86,6 +86,7 @@ nattowok live                       # watch devices answer in real time; unplug 
 nattowok merge 192.168.1.88 "Sam's phone"   # tell NattoWok two entries are one device
 nattowok wake "Office PC"           # Wake-on-LAN
 nattowok export md -o report.md     # a report for whoever helps you with tech
+nattowok export anonymised -o sample.json   # scrubbed copy to help improve detection (read it, then share if you like)
 nattowok home                       # who's home, going by their phones
 nattowok router                     # where your router keeps the settings worth changing
 nattowok networks                   # the networks NattoWok remembers
@@ -144,6 +145,7 @@ Data lives in your OS data folder (`~/.local/share/nattowok`, `~/Library/Applica
 - **Local only.** Only three features talk to the internet, and only when you run them: the Internet doctor (a few TCP connects and DNS queries to Cloudflare, Google and Quad9, plus Google's standard connectivity check), the speed test (Cloudflare's public speed-test service) and `update-vendors` (downloads the IEEE's public registry). Nothing about your network is sent anywhere, and results stay on your computer.
 - **The dashboard listens on localhost by default.** Every API call needs a random per-run token embedded in the page, which other websites can't read. Requests whose `Host` isn't localhost are refused, which blocks DNS-rebinding attacks. `--listen 0.0.0.0:7878` exposes it on purpose; access then requires a key printed in the terminal.
 - **Polite scanning.** NattoWok only connects. It never logs in, never tries passwords, and only follows UPnP description URLs that point back at the device that announced them.
+- **The anonymised export is yours to share or not.** It removes names, notes and tags you added, IP addresses, the unique half of every hardware address (all of it for private addresses), your Wi-Fi name and your public address, and turns personal words in device-announced names into `*`. Nothing is uploaded; read the file before sending it anywhere.
 - **Router exposure is read-only.** NattoWok asks the router for its port-forwarding list; it never adds or removes mappings.
 - Only scan networks you own or are allowed to scan.
 

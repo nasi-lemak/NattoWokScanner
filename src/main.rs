@@ -208,6 +208,9 @@ enum ExportFormat {
     Csv,
     Md,
     Json,
+    /// Scrubbed of names and addresses, for helping improve detection
+    #[value(alias = "anonymized")]
+    Anonymised,
 }
 
 struct Paint {
@@ -612,6 +615,7 @@ async fn run(cli: Cli) -> Result<()> {
                 ExportFormat::Csv => report::to_csv(&view),
                 ExportFormat::Md => report::to_markdown(&view),
                 ExportFormat::Json => serde_json::to_string_pretty(&view)?,
+                ExportFormat::Anonymised => report::to_anonymised_json(&view),
             };
             match output {
                 Some(path) => {

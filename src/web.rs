@@ -507,7 +507,8 @@ async fn export(State(state): State<Shared>, Path(format): Path<String>) -> ApiR
         "csv" => (report::to_csv(&report), "text/csv; charset=utf-8", "csv"),
         "md" => (report::to_markdown(&report), "text/markdown; charset=utf-8", "md"),
         "json" => (serde_json::to_string_pretty(&report).map_err(anyhow::Error::from)?, "application/json", "json"),
-        _ => return Err(ApiError(StatusCode::BAD_REQUEST, "format must be csv, md or json".into())),
+        "anonymised" => (report::to_anonymised_json(&report), "application/json", "anonymised.json"),
+        _ => return Err(ApiError(StatusCode::BAD_REQUEST, "format must be csv, md, json or anonymised".into())),
     };
     let disposition = format!("attachment; filename=\"network-{stamp}.{ext}\"");
     Ok(([(header::CONTENT_TYPE, mime.to_string()), (header::CONTENT_DISPOSITION, disposition)], body).into_response())

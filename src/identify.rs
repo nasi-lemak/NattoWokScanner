@@ -220,6 +220,17 @@ const KEYWORDS: &[(&str, DeviceKind, u32)] = &[
     ("virtualbox", VirtualMachine, 50),
 ];
 
+/// Words that describe a kind of device rather than a person or place
+/// ("iphone", "desktop", "printer"); used to scrub names in anonymised exports.
+pub fn is_device_word(token: &str) -> bool {
+    const EXTRA: &[&str] = &[
+        "series", "pro", "max", "mini", "plus", "air", "ultra", "lite", "wifi", "wireless", "smart", "home", "audio",
+        "speaker", "display", "hub", "bridge", "station", "box", "stick", "galaxy", "laptop", "desktop", "mobile",
+    ];
+    let t = token.to_lowercase();
+    KEYWORDS.iter().any(|(needle, _, _)| *needle == t) || EXTRA.contains(&t.as_str())
+}
+
 /// Short keywords match whole tokens only ("hp" must not match "iphone");
 /// longer ones also match inside a token ("johnsmacbook").
 fn keyword_hits(text: &str) -> Vec<(&'static str, DeviceKind, u32)> {
