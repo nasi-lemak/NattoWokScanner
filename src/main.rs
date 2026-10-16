@@ -102,6 +102,11 @@ enum Command {
         tags: Vec<String>,
         #[arg(long)]
         note: Option<String>,
+        /// Correct the device type: router, computer, phone, tablet, wearable,
+        /// tv, speaker, printer, camera, smart_home, game_console, nas, server,
+        /// virtual_machine, unknown, or `auto` to go back to detection
+        #[arg(long, value_name = "TYPE")]
+        kind: Option<String>,
     },
     /// Remove a device and its history
     Forget { device: String },
@@ -463,7 +468,13 @@ async fn run(cli: Cli) -> Result<()> {
             println!("Sent a wake-up packet to {mac}. It may take a minute to boot.");
             Ok(())
         }
-        Command::Label { device, name, trust, untrust, tags, note } => {
+        Command::Label { device, name, trust, untrust, tags, note, kind } => {
+            if let Some(k) = kind.as_deref().filter(|k| *k != "auto") {
+                anyhow::ensure!(
+                    nattowok::store::parse_kind(k).is_some(),
+                    "{k:?} isn't a device type; see `nattowok label --help`"
+                );
+            }
             let (key, mut inv) = current()?;
             let id = resolve(&inv, &device)?.id.clone();
             let update = DeviceUpdate {
@@ -477,6 +488,7 @@ async fn run(cli: Cli) -> Result<()> {
                 } else {
                     None
                 },
+                kind,
             };
             let k = inv.update(&id, update).expect("resolved above");
             let label = k.custom_name.clone().unwrap_or_else(|| k.snapshot.name.clone());

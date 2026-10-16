@@ -363,11 +363,135 @@ function renderDevices(report) {
     ? shown.map(deviceRow).join("")
     : `<div class="empty"><h3>No devices match</h3><p>Try another filter or search.</p></div>`;
 
-  const unreviewed = report.devices.filter((x) => x.online && !x.trusted && !x.is_self && !x.is_gateway).length;
+  const unreviewed = report.devices.filter(needsReview).length;
   const banner = $("#review-banner");
-  banner.hidden = !(state.filter === "unreviewed" && unreviewed > 0);
-  banner.innerHTML = `<span>Recognise all ${unreviewed} of these? Mark them trusted, and NattoWok will point out anything new that joins later.</span>
-    <button class="btn small primary" id="trust-all">They're all mine</button>`;
+  banner.hidden = !(["all", "unreviewed"].includes(state.filter) && unreviewed > 0 && !state.live.on);
+  banner.innerHTML = `<span><strong>${unreviewed} device${unreviewed > 1 ? "s" : ""} to review.</strong> Going through them takes about a minute, and lets NattoWok tell you when something new joins.</span>
+    <span class="actions"><button class="btn small primary" id="review-start">Review one by one</button>
+    <button class="btn small" id="trust-all">They're all mine</button></span>`;
+}
+
+// ---------- guided review ----------
+
+// Online, not yours yet, and not already marked as unrecognised.
+function needsReview(x) {
+  return x.online && !x.trusted && !x.is_self && !x.is_gateway && !(x.tags || []).includes("unrecognised");
+}
+
+const review = { queue: [], i: 0, mine: 0, skipped: 0, unknown: [] };
+
+function kindOptions(d) {
+  const detected = d.detected_kind || d.kind;
+  const auto = `<option value="auto" ${d.detected_kind ? "" : "selected"}>${esc(KIND_LABELS[detected])} (detected)</option>`;
+  const choices = Object.entries(KIND_LABELS)
+    .map(([k, label]) => `<option value="${k}" ${d.detected_kind && d.kind === k ? "selected" : ""}>${esc(label)}</option>`)
+    .join("");
+  return `${auto}<optgroup label="It's actually a…">${choices}</optgroup>`;
+}
+
+function startReview() {
+  const report = state.data?.report;
+  if (!report) return;
+  review.queue = report.devices.filter(needsReview).map((x) => x.id);
+  Object.assign(review, { i: 0, mine: 0, skipped: 0, unknown: [] });
+  if (!review.queue.length) return toast("Nothing left to review");
+  $("#review").showModal();
+  renderReview();
+}
+
+function nextReview() {
+  review.i += 1;
+  renderReview();
+}
+
+function renderReview() {
+  const dlg = $("#review");
+  if (review.i >= review.queue.length) return renderReviewDone();
+  const d = state.data.report.devices.find((x) => x.id === review.queue[review.i]);
+  if (!d) return nextReview();
+  const n = review.queue.length;
+  const clues = (d.evidence || []).slice(0, 2).map((e) => esc(e.detail)).join(" · ");
+  dlg.innerHTML = `
+    <div class="review-head"><span class="hint">Device ${review.i + 1} of ${n}</span>
+      <button class="btn ghost icon-only" id="rv-close" aria-label="Close review">✕</button></div>
+    <div class="meter"><div style="width:${Math.round((review.i / n) * 100)}%"></div></div>
+    <div class="review-card">
+      <div class="kind-icon">${icon(d.kind)}</div>
+      <div style="min-width:0;flex:1">
+        <label class="hint" for="rv-name">Name it something you'll recognise</label>
+        <input class="name-input" id="rv-name" value="${esc(name(d))}">
+        <p class="rv-meta">${esc([d.model, d.vendor || (d.private_mac ? "private Wi-Fi address" : null), d.ip].filter(Boolean).join(" · "))}</p>
+        ${clues ? `<p class="hint">Why we think so: ${clues}</p>` : `<p class="hint">It didn't reveal much about itself.</p>`}
+        <label class="rv-kind">Type <select id="rv-kind">${kindOptions(d)}</select></label>
+      </div>
+    </div>
+    <div class="review-actions">
+      <button class="btn primary" id="rv-yes">Yes, it's mine</button>
+      <button class="btn" id="rv-find">Not sure, help me find it</button>
+      <button class="btn" id="rv-no">I don't recognise it</button>
+      <button class="btn ghost" id="rv-skip">Skip</button>
+    </div>`;
+  const nameInput = $("#rv-name");
+  nameInput.onkeydown = (e) => { if (e.key === "Enter") $("#rv-yes").click(); };
+  $("#rv-close").onclick = () => { dlg.close(); refresh(); };
+  $("#rv-skip").onclick = () => { review.skipped += 1; nextReview(); };
+  $("#rv-yes").onclick = async () => {
+    const patch = { trusted: true };
+    const typed = nameInput.value.trim();
+    if (typed && typed !== name(d)) patch.custom_name = typed;
+    const kind = $("#rv-kind").value;
+    if (kind !== (d.detected_kind ? d.kind : "auto")) patch.kind = kind;
+    try {
+      await api(`/api/devices/${encodeURIComponent(d.id)}`, { method: "PATCH", body: JSON.stringify(patch) });
+      review.mine += 1;
+      nextReview();
+    } catch (e) { toast(`Couldn't save: ${e.message}`); }
+  };
+  $("#rv-no").onclick = async () => {
+    try {
+      await api(`/api/devices/${encodeURIComponent(d.id)}`, { method: "PATCH", body: JSON.stringify({ tags: [...(d.tags || []), "unrecognised"] }) });
+      review.unknown.push(name(d));
+      nextReview();
+    } catch (e) { toast(`Couldn't save: ${e.message}`); }
+  };
+  $("#rv-find").onclick = () => {
+    dlg.close();
+    selectTab("devices");
+    setFilter("all");
+    setLive(true);
+    const row = document.querySelector(`.device[data-device="${CSS.escape(d.id)}"]`);
+    row?.scrollIntoView({ block: "center" });
+    row?.classList.add("flash-up");
+    toast(`Unplug or switch off things one at a time. When "${name(d)}" stops answering, you've found it.`, {
+      label: "Back to review",
+      run: () => { setLive(false); dlg.showModal(); renderReview(); },
+    });
+  };
+  nameInput.focus();
+  nameInput.select();
+}
+
+function renderReviewDone() {
+  const dlg = $("#review");
+  const unknown = review.unknown.length
+    ? `<div class="panel warn"><h3>About the ${review.unknown.length} you don't recognise</h3>
+        <p>${esc(review.unknown.join(", "))}</p>
+        <ol>
+          <li>Ask the others at home: a new TV, a guest's phone or a smart plug is the usual answer.</li>
+          <li>Try <strong>Live</strong> mode and unplug things one at a time to see which box it is.</li>
+          <li>If nobody owns it, change your Wi-Fi password. Your own devices will ask for the new one, and strangers are locked out.</li>
+          <li>Turn on alerts (the bell, top right) so you hear about newcomers.</li>
+        </ol>
+        ${routerHelp("wifi_security")}</div>`
+    : "";
+  dlg.innerHTML = `
+    <div class="review-head"><strong>All done</strong><button class="btn ghost icon-only" id="rv-close" aria-label="Close review">✕</button></div>
+    <p>${review.mine} marked as yours${review.skipped ? `, ${review.skipped} skipped` : ""}${review.unknown.length ? `, ${review.unknown.length} not recognised` : ""}. From now on, anything new that joins will stand out.</p>
+    ${unknown}
+    <div class="review-actions"><button class="btn primary" id="rv-done">Done</button></div>`;
+  const close = () => { dlg.close(); refresh(); };
+  $("#rv-close").onclick = close;
+  $("#rv-done").onclick = close;
 }
 
 // Brand-specific steps for a router setting, collapsed until wanted.
@@ -719,7 +843,7 @@ function renderDrawer(d) {
       <div class="kind-icon">${icon(d.kind)}</div>
       <div style="flex:1;min-width:0">
         <input class="name-input" id="dev-name" value="${esc(name(d))}" aria-label="Device name" placeholder="${esc(d.name)}">
-        <div style="color:var(--muted);font-size:14px">${esc(KIND_LABELS[d.kind])}${d.online ? "" : " · offline"}</div>
+        <div class="kind-line"><select id="dev-kind" aria-label="Device type">${kindOptions(d)}</select>${d.online ? "" : " · offline"}</div>
       </div>
       <button class="btn ghost icon-only close" id="drawer-close" aria-label="Close">✕</button>
     </div>
@@ -810,6 +934,7 @@ function wireDrawer(d) {
   };
   nameInput.onkeydown = (e) => e.key === "Enter" && nameInput.blur();
   $("#dev-trusted").onchange = (e) => saveDevice(d.id, { trusted: e.target.checked });
+  $("#dev-kind").onchange = (e) => saveDevice(d.id, { kind: e.target.value }).then(() => toast("Type saved"));
   $("#dev-tags").onchange = (e) => saveDevice(d.id, { tags: e.target.value.split(",") });
   $("#dev-notes").onchange = (e) => saveDevice(d.id, { notes: e.target.value });
   $("#act-copy").onclick = async () => {
@@ -870,7 +995,7 @@ function setFilter(filter) {
 }
 
 document.addEventListener("click", async (e) => {
-  const t = e.target.closest("[data-device],[data-tab],[data-filter],[data-goto-filter],[data-goto-tab],[data-ignore],[data-unignore],[data-export],#trust-all,#doctor-btn,#speed-btn");
+  const t = e.target.closest("[data-device],[data-tab],[data-filter],[data-goto-filter],[data-goto-tab],[data-ignore],[data-unignore],[data-export],#trust-all,#review-start,#doctor-btn,#speed-btn");
   if (!e.target.closest(".menu")) {
     $("#export-menu").hidden = true;
     $("#settings-menu").hidden = true;
@@ -897,6 +1022,7 @@ document.addEventListener("click", async (e) => {
   try {
     if (t.dataset.ignore) { await api(`/api/findings/${encodeURIComponent(t.dataset.ignore)}/ignore`, { method: "POST" }); toast("Dismissed"); }
     if (t.dataset.unignore) await api(`/api/findings/${encodeURIComponent(t.dataset.unignore)}/ignore`, { method: "DELETE" });
+    if (t.id === "review-start") return startReview();
     if (t.id === "trust-all") { const r = await api("/api/trust-all", { method: "POST" }); toast(`Marked ${r.trusted} devices as trusted`); }
     if (t.id === "doctor-btn") await api("/api/doctor", { method: "POST" });
     if (t.id === "speed-btn") await api("/api/speedtest", { method: "POST" });

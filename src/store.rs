@@ -10,7 +10,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::matching;
-use crate::model::{Device, NetworkInfo, PossibleMatch, ScanReport, Session};
+use crate::model::{Device, DeviceKind, Evidence, NetworkInfo, PossibleMatch, ScanReport, Session};
 use crate::security;
 
 const MAX_EVENTS: usize = 2000;
@@ -67,6 +67,9 @@ pub struct KnownDevice {
     /// When it was online, from consecutive scans.
     #[serde(default)]
     pub sessions: Vec<Session>,
+    /// The type the person says it is, overriding detection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind_override: Option<DeviceKind>,
     /// The device as it looked when last seen.
     pub snapshot: Device,
 }
@@ -127,7 +130,16 @@ pub struct DeviceUpdate {
     pub notes: Option<String>,
     pub tags: Option<Vec<String>>,
     pub trusted: Option<bool>,
+    /// A device type like `"tv"`, or `"auto"` to go back to detection.
+    pub kind: Option<String>,
 }
+
+/// Parses a device type as written in the API and CLI (`tv`, `smart_home`, ...).
+pub fn parse_kind(s: &str) -> Option<DeviceKind> {
+    serde_json::from_value(serde_json::Value::String(s.trim().to_lowercase().replace([' ', '-'], "_"))).ok()
+}
+
+const YOUR_CHOICE: &str = "You set this type";
 
 pub fn default_dir() -> PathBuf {
     if let Some(dir) = std::env::var_os("NATTOWOK_DATA") {
@@ -324,6 +336,28 @@ impl Inventory {
             d.trusted = k.trusted;
             d.first_seen = Some(k.first_seen);
             d.last_seen = Some(k.last_seen);
+            match k.kind_override {
+                Some(kind) => {
+                    if d.detected_kind.is_none() {
+                        d.detected_kind = Some(d.kind);
+                        d.detected_confidence = Some(d.confidence);
+                    }
+                    d.kind = kind;
+                    d.confidence = 100;
+                    if !d.evidence.iter().any(|e| e.detail == YOUR_CHOICE) {
+                        d.evidence
+                            .insert(0, Evidence { source: "You".into(), detail: YOUR_CHOICE.into(), weight: 1000 });
+                    }
+                }
+                // The choice was undone since this copy was decorated.
+                None => {
+                    if let Some(detected) = d.detected_kind.take() {
+                        d.kind = detected;
+                        d.confidence = d.detected_confidence.take().unwrap_or(d.confidence);
+                        d.evidence.retain(|e| e.detail != YOUR_CHOICE);
+                    }
+                }
+            }
         }
     }
 
@@ -371,6 +405,7 @@ impl Inventory {
                             times_seen: 1,
                             ip_history: vec![(d.ip, at)],
                             sessions: vec![Session { from: at, to: at }],
+                            kind_override: None,
                             snapshot: d.clone(),
                         },
                     );
@@ -596,6 +631,9 @@ impl Inventory {
         }
         if let Some(trusted) = update.trusted {
             k.trusted = trusted;
+        }
+        if let Some(kind) = update.kind {
+            k.kind_override = if kind == "auto" { None } else { parse_kind(&kind) };
         }
         Some(k)
     }
@@ -972,6 +1010,32 @@ mod tests {
         let mut merged = vec![sb[1], sb[0], Session { from: sb[0].from, to: sb[0].to + chrono::Duration::minutes(1) }];
         normalize_sessions(&mut merged);
         assert_eq!(merged.len(), 2);
+    }
+
+    #[test]
+    fn people_can_correct_the_type() {
+        let mut inv = Inventory::default();
+        let mut a = dev(10, "00:00:00:00:00:0A");
+        a.kind = DeviceKind::Speaker;
+        a.confidence = 40;
+        inv.apply_scan(&mut report(vec![a.clone()], 0));
+        assert_eq!(parse_kind("smart home"), Some(DeviceKind::SmartHome));
+        inv.update(&a.id, DeviceUpdate { kind: Some("tv".into()), ..Default::default() });
+        let v = inv.current_view().unwrap();
+        assert_eq!(v.devices[0].kind, DeviceKind::Tv);
+        assert_eq!(v.devices[0].detected_kind, Some(DeviceKind::Speaker));
+        assert_eq!(v.devices[0].evidence[0].detail, YOUR_CHOICE);
+        // Survives a rescan that still detects a speaker.
+        let mut r = report(vec![a.clone()], 1);
+        inv.apply_scan(&mut r);
+        assert_eq!(r.devices[0].kind, DeviceKind::Tv);
+        // And can be undone.
+        inv.update(&a.id, DeviceUpdate { kind: Some("auto".into()), ..Default::default() });
+        let v = inv.current_view().unwrap();
+        assert_eq!(v.devices[0].kind, DeviceKind::Speaker);
+        assert!(v.devices[0].detected_kind.is_none());
+        assert_eq!(v.devices[0].confidence, 40);
+        assert!(v.devices[0].evidence.iter().all(|e| e.detail != YOUR_CHOICE));
     }
 
     #[test]

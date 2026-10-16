@@ -28,6 +28,7 @@ NattoWok is a network scanner in the spirit of Fing. It's built around a differe
 | Speed tests that ignore the thing you actually feel | The **speed test** (`nattowok speed`, or the Internet doctor tab) measures download and upload *and how much delay grows while the line is busy*: the "bufferbloat" behind laggy calls when someone streams. It grades it A–F and names the router setting that fixes it (Smart Queue / SQM), with speeds to set. Results are kept, so you can see whether your provider delivers. |
 | "Turn off UPnP in your router"… but where? | NattoWok recognises your router (ASUS, TP-Link, Deco, Netgear, Orbi, eero, Google/Nest, FRITZ!Box, Linksys, UniFi, MikroTik, OpenWrt, D-Link) and every fix comes with **where that setting lives on your model**, plus an "Open router settings" button. Provider-supplied routers get clear general steps. `nattowok router` lists them all. |
 | Cameras and smart plugs on the same network as your laptop | Flags gadgets that rarely get security updates sharing your main network, and walks you through moving them to the router's **guest/IoT network**. |
+| Reviewing a long list of devices is a chore | A **guided review** shows one device at a time: *Yes, it's mine* (name it as you go), *Not sure, help me find it* (switches on Live mode), *I don't recognise it* (with what to do next), or *Skip*. If NattoWok guessed the type wrong, pick the right one; your choice sticks across scans. |
 | Wanting automation | `nattowok watch --on-new-device "…"` runs your command when something joins (send a notification, log it, turn on a light). |
 
 ### Devices explain themselves
@@ -80,6 +81,7 @@ nattowok doctor                     # why is the internet slow?
 nattowok speed                      # speed + lag under load; --history for past results
 nattowok ports "Hallway camera"     # check ~1,100 ports on one device
 nattowok label 192.168.1.52 --name "Hallway camera" --trust --tag outdoor
+nattowok label 192.168.1.77 --kind smart_home   # correct a wrong guess (--kind auto undoes it)
 nattowok live                       # watch devices answer in real time; unplug one to find it
 nattowok merge 192.168.1.88 "Sam's phone"   # tell NattoWok two entries are one device
 nattowok wake "Office PC"           # Wake-on-LAN

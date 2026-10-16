@@ -238,6 +238,11 @@ pub struct Device {
     /// phone that rotated its private Wi-Fi address).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub possible_match: Option<PossibleMatch>,
+    /// What NattoWok detected, when the person picked a different type.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detected_kind: Option<DeviceKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detected_confidence: Option<u8>,
     /// When it was online recently (filled in for display only).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub presence: Vec<Session>,
@@ -294,6 +299,8 @@ impl Device {
             last_seen: None,
             is_new: false,
             possible_match: None,
+            detected_kind: None,
+            detected_confidence: None,
             presence: Vec::new(),
         }
     }

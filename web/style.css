@@ -319,6 +319,22 @@ textarea { min-height: 70px; resize: vertical; }
 .router-steps p { margin: 6px 0; }
 .router-steps .btn { margin-top: 4px; }
 
+/* Guided review */
+.review { width: min(560px, calc(100vw - 32px)); border: 1px solid var(--border); border-radius: 16px; padding: 18px 20px; background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
+.review::backdrop { background: rgba(0, 0, 0, .35); }
+.review-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.review .meter { margin-bottom: 14px; }
+.review-card { display: flex; gap: 14px; align-items: flex-start; }
+.review-card .kind-icon { width: 56px; height: 56px; flex: none; }
+.review-card .name-input { margin: 2px 0 4px; }
+.rv-meta { margin: 0 0 4px; color: var(--muted); font-size: 14px; }
+.rv-kind { display: flex; gap: 8px; align-items: center; font-size: 14px; margin-top: 8px; }
+.rv-kind select, .kind-line select { padding: 4px 6px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); font-size: 13px; }
+.kind-line { color: var(--muted); font-size: 14px; }
+.review-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.review ol { padding-left: 20px; margin: 6px 0; }
+.banner .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
 /* Presence */
 .presence { display: grid; gap: 4px; }
 .pres-row { display: grid; grid-template-columns: 44px 1fr; align-items: center; gap: 8px; }
