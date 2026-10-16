@@ -109,6 +109,7 @@ a { color: var(--accent); }
 .btn.ghost { background: transparent; }
 .btn.danger { color: var(--bad); }
 .btn.small { padding: 4px 10px; font-size: 13px; border-radius: 8px; }
+a.btn { display: inline-block; text-decoration: none; color: var(--text); }
 .btn:disabled { opacity: .55; cursor: default; }
 .icon-only { width: 38px; padding: 8px 0; display: inline-grid; place-items: center; }
 .icon-only svg { width: 18px; height: 18px; }
@@ -312,6 +313,11 @@ textarea { min-height: 70px; resize: vertical; }
 .speed-tiles .big { font-size: 26px; font-weight: 700; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
 .speed-tiles .unit { color: var(--muted); font-size: 12px; }
 .advice-box { background: var(--surface-2); border-radius: 8px; padding: 8px 10px; }
+
+.router-steps { margin: 8px 0 0; font-size: 14px; }
+.router-steps summary { cursor: pointer; color: var(--accent); font-weight: 600; }
+.router-steps p { margin: 6px 0; }
+.router-steps .btn { margin-top: 4px; }
 
 /* Presence */
 .presence { display: grid; gap: 4px; }

@@ -151,6 +151,8 @@ enum Command {
         #[arg(long, short)]
         output: Option<PathBuf>,
     },
+    /// Where your router keeps the settings NattoWok suggests changing
+    Router,
     /// Who's home, going by when their phones are on the network
     Home,
     /// List the networks NattoWok remembers (each has its own devices)
@@ -663,6 +665,32 @@ async fn run(cli: Cli) -> Result<()> {
                 Ok(())
             }
         },
+        Command::Router => {
+            let (_, inv) = current()?;
+            let view = inv.current_view().context("no devices known yet; run `nattowok scan` first")?;
+            let g = view.router_guide.context("NattoWok hasn't found your router yet; run `nattowok scan`")?;
+            println!("\n  {} {}", paint.bold("Router:"), g.brand);
+            println!("  {} {}", paint.bold("Settings:"), g.admin_url);
+            if let Some(app) = &g.app {
+                println!("  {} {app}", paint.bold("App:"));
+            }
+            println!();
+            use nattowok::model::FixTopic::*;
+            for (topic, label) in [
+                (Upnp, "Turn off UPnP"),
+                (GuestNetwork, "Guest / IoT network"),
+                (Sqm, "Smart queue (fix lag under load)"),
+                (WifiSecurity, "Wi-Fi security"),
+                (WifiChannel, "Wi-Fi channel"),
+                (Firmware, "Update firmware"),
+            ] {
+                if let Some(step) = g.steps.get(&topic) {
+                    println!("  {}\n    {step}", paint.bold(label));
+                }
+            }
+            println!("\n  {}\n", paint.dim("Menu names vary between firmware versions."));
+            Ok(())
+        }
         Command::Home => {
             let (_, inv) = current()?;
             let view = inv.current_view().context("no devices known yet; run `nattowok scan` first")?;
@@ -946,6 +974,12 @@ fn print_report(paint: &Paint, report: &ScanReport, events: &[Event]) {
         };
         println!("  {sev} {}", f.title);
         println!("         {} {}", paint.blue("→"), f.fix);
+        if let (Some(topic), Some(g)) = (f.topic, &report.router_guide)
+            && let Some(step) = g.steps.get(&topic)
+        {
+            let on = if g.generic { "On your router".to_string() } else { format!("On your {}", g.brand) };
+            println!("           {}", paint.dim(&format!("{on}: {step}")));
+        }
     }
     for d in report.devices.iter().filter(|d| d.possible_match.is_some()) {
         let m = d.possible_match.as_ref().expect("filtered");

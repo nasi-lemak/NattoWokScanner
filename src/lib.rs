@@ -17,6 +17,7 @@ pub mod notify;
 pub mod oui;
 pub mod probe;
 pub mod report;
+pub mod routers;
 pub mod scan;
 pub mod security;
 pub mod service;

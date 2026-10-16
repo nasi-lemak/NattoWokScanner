@@ -9,7 +9,7 @@ use anyhow::Result;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::model::NetworkInfo;
+use crate::model::{FixTopic, NetworkInfo};
 use crate::probe::{self, TcpState};
 use crate::scan::Progress;
 use crate::wifi::{self, Quality, SecurityRisk, WifiInfo};
@@ -77,6 +77,9 @@ pub struct Check {
     pub advice: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub latency: Option<Latency>,
+    /// Router setting that fixes it, for brand-specific steps.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic: Option<FixTopic>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -203,6 +206,7 @@ pub async fn run(interface: Option<&str>, progress: Progress) -> Result<Diagnosi
                     "Check that Wi-Fi is turned on and connected, or that the network cable is plugged in.".into(),
                 ),
                 latency: None,
+                topic: None,
             });
             return Ok(conclude(checks, Vec::new(), None));
         }
@@ -220,6 +224,7 @@ pub async fn run(interface: Option<&str>, progress: Progress) -> Result<Diagnosi
         ),
         advice: None,
         latency: None,
+        topic: None,
     };
     if info.ip.is_link_local() {
         local.status = Status::Fail;
@@ -311,6 +316,7 @@ pub async fn run(interface: Option<&str>, progress: Progress) -> Result<Diagnosi
         detail: String::new(),
         advice: None,
         latency: router.clone(),
+        topic: None,
     };
     match &router {
         None => {
@@ -355,6 +361,7 @@ pub async fn run(interface: Option<&str>, progress: Progress) -> Result<Diagnosi
         detail: String::new(),
         advice: None,
         latency: best.as_ref().map(|b| b.1.clone()),
+        topic: None,
     };
     match &best {
         None => {
@@ -394,6 +401,7 @@ pub async fn run(interface: Option<&str>, progress: Progress) -> Result<Diagnosi
                 .into(),
             advice: Some("Open a browser and visit any website to see the sign-in page.".into()),
             latency: None,
+            topic: None,
         });
     }
 
@@ -416,6 +424,7 @@ pub async fn run(interface: Option<&str>, progress: Progress) -> Result<Diagnosi
         detail: String::new(),
         advice: None,
         latency: None,
+        topic: None,
     };
     match current {
         None if configured.is_empty() => {
@@ -525,6 +534,15 @@ pub fn wifi_check(w: &WifiInfo, router_trouble: bool) -> Check {
         _ => (Status::Pass, "Wi-Fi signal".to_string(), crowded.then(|| format!("Tip: the airwaves are busy here. {channel_tip}"))),
     };
 
+    // Router steps to show: the channel when crowding is the point, otherwise security if that needs fixing.
+    let topic = if crowded {
+        Some(FixTopic::WifiChannel)
+    } else if w.security_risk().is_some() {
+        Some(FixTopic::WifiSecurity)
+    } else {
+        None
+    };
+
     // Security doesn't slow you down, so it never decides the verdict, but say it.
     let security_note = match w.security_risk() {
         Some(SecurityRisk::Open) => Some(
@@ -541,7 +559,7 @@ pub fn wifi_check(w: &WifiInfo, router_trouble: bool) -> Check {
             None => note.to_string(),
         });
     }
-    Check { id: "wifi".into(), layer: "Wi-Fi".into(), title, status, detail, advice, latency: None }
+    Check { id: "wifi".into(), layer: "Wi-Fi".into(), title, status, detail, advice, latency: None, topic }
 }
 
 fn wifi_advice(wireless: bool) -> String {
@@ -610,6 +628,7 @@ mod tests {
             detail: "d".into(),
             advice: Some(format!("fix {id}")),
             latency: None,
+            topic: None,
         }
     }
 

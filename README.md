@@ -26,6 +26,8 @@ NattoWok is a network scanner in the spirit of Fing. It's built around a differe
 | Only finding out about a new device when you happen to look | `nattowok service install` keeps NattoWok running in the background (starting at log-in), **scanning on a schedule and sending desktop notifications** for new devices and security issues. No admin rights needed. |
 | "Is that device usually here?" | Every device gets a **week view of when it was online**, with a plain summary ("usually online between 18:00 and 08:00"). Times NattoWok wasn't scanning are shown as such, never as "offline". A **Who's home** panel (and `nattowok home`) uses household phones as a stand-in for people. |
 | Speed tests that ignore the thing you actually feel | The **speed test** (`nattowok speed`, or the Internet doctor tab) measures download and upload *and how much delay grows while the line is busy*: the "bufferbloat" behind laggy calls when someone streams. It grades it A–F and names the router setting that fixes it (Smart Queue / SQM), with speeds to set. Results are kept, so you can see whether your provider delivers. |
+| "Turn off UPnP in your router"… but where? | NattoWok recognises your router (ASUS, TP-Link, Deco, Netgear, Orbi, eero, Google/Nest, FRITZ!Box, Linksys, UniFi, MikroTik, OpenWrt, D-Link) and every fix comes with **where that setting lives on your model**, plus an "Open router settings" button. Provider-supplied routers get clear general steps. `nattowok router` lists them all. |
+| Cameras and smart plugs on the same network as your laptop | Flags gadgets that rarely get security updates sharing your main network, and walks you through moving them to the router's **guest/IoT network**. |
 | Wanting automation | `nattowok watch --on-new-device "…"` runs your command when something joins (send a notification, log it, turn on a light). |
 
 ### Devices explain themselves
@@ -83,6 +85,7 @@ nattowok merge 192.168.1.88 "Sam's phone"   # tell NattoWok two entries are one 
 nattowok wake "Office PC"           # Wake-on-LAN
 nattowok export md -o report.md     # a report for whoever helps you with tech
 nattowok home                       # who's home, going by their phones
+nattowok router                     # where your router keeps the settings worth changing
 nattowok networks                   # the networks NattoWok remembers
 nattowok info                       # this computer's network settings
 nattowok update-vendors             # fetch the latest manufacturer list from the IEEE
@@ -167,6 +170,7 @@ Layout:
 | `src/probe.rs`, `neighbors.rs`, `mdns.rs`, `ssdp.rs`, `netbios.rs`, `dns.rs` | Discovery primitives |
 | `src/identify.rs` | Explainable device identification |
 | `src/security.rs` | Plain-language findings and health score |
+| `src/routers.rs` | Brand-specific router setting locations |
 | `src/store.rs` | Per-network inventory, change tracking, merging |
 | `src/matching.rs` | Recognising devices that return under a new hardware address |
 | `src/speedtest.rs`, `src/fetch.rs` | Speed and bufferbloat test; small HTTPS client |

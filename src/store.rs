@@ -458,6 +458,7 @@ impl Inventory {
         let previously_seen: BTreeSet<String> =
             self.last_report.as_ref().map(|r| r.all_findings().map(|f| f.id.clone()).collect()).unwrap_or_default();
         self.mark_ignored(report);
+        report.router_guide = report.devices.iter().find(|d| d.is_gateway).map(crate::routers::guide);
         let new_serious: Vec<(String, Option<String>)> = report
             .all_findings()
             .filter(|f| !f.ignored && f.severity >= crate::model::Severity::Medium && !previously_seen.contains(&f.id))
@@ -506,6 +507,7 @@ impl Inventory {
             self.previous_router.as_deref(),
         );
         self.mark_ignored(&mut report);
+        report.router_guide = report.devices.iter().find(|d| d.is_gateway).map(crate::routers::guide);
         let online: BTreeSet<String> = report.devices.iter().map(|d| d.id.clone()).collect();
         // Drop suggestions that no longer make sense: both are online (so they
         // can't be one device), the old entry is gone, or someone said no.
@@ -783,6 +785,7 @@ mod tests {
             notes: vec![],
             exposure: None,
             wifi: None,
+            router_guide: None,
         }
     }
 

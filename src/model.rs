@@ -139,6 +139,19 @@ impl Severity {
     }
 }
 
+/// A router setting a finding or diagnosis can be fixed with; the dashboard
+/// shows brand-specific steps for it.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum FixTopic {
+    Upnp,
+    GuestNetwork,
+    Sqm,
+    WifiSecurity,
+    WifiChannel,
+    Firmware,
+}
+
 /// A security or hygiene observation, written for non-experts.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct Finding {
@@ -154,6 +167,15 @@ pub struct Finding {
     pub device_id: Option<String>,
     #[serde(default)]
     pub ignored: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub topic: Option<FixTopic>,
+}
+
+impl Finding {
+    pub fn with_topic(mut self, topic: FixTopic) -> Self {
+        self.topic = Some(topic);
+        self
+    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -362,6 +384,9 @@ pub struct ScanReport {
     pub exposure: Option<RouterExposure>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub wifi: Option<crate::wifi::WifiInfo>,
+    /// Where this router keeps its settings (filled in for display).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub router_guide: Option<crate::routers::RouterGuide>,
 }
 
 impl ScanReport {

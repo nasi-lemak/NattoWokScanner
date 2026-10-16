@@ -370,12 +370,26 @@ function renderDevices(report) {
     <button class="btn small primary" id="trust-all">They're all mine</button>`;
 }
 
+// Brand-specific steps for a router setting, collapsed until wanted.
+function routerHelp(topic) {
+  const g = state.data?.report?.router_guide;
+  const step = topic && g?.steps?.[topic];
+  if (!step) return "";
+  const where = g.generic ? "How to find this on your router" : `How to do this on your ${g.brand}`;
+  const app = g.app ? ` You can also use the ${esc(g.app)}.` : "";
+  return `<details class="router-steps"><summary>${esc(where)}</summary>
+    <p>${esc(step)}${app}</p>
+    <p class="hint">Menu names vary between firmware versions.</p>
+    <a class="btn small" href="${esc(g.admin_url)}" target="_blank" rel="noopener noreferrer">Open router settings</a></details>`;
+}
+
 function findingCard(f, devices) {
   const dev = f.device_id ? devices.find((d) => d.id === f.device_id) : null;
   return `<div class="finding ${f.severity} ${f.ignored ? "ignored" : ""}">
     <h3><span class="badge ${f.severity}">${esc(f.severity)}</span>${esc(f.title)}</h3>
     <p>${esc(f.explanation)}</p>
     <p class="fix"><strong>What to do:</strong> ${esc(f.fix)}</p>
+    ${routerHelp(f.topic)}
     <div class="row">
       <span>${dev ? `<a data-device="${esc(dev.id)}">${esc(name(dev))} · ${esc(dev.ip)}</a>` : ""}</span>
       ${f.ignored
@@ -472,6 +486,7 @@ function speedPanel(d) {
   return `<div class="panel">${head}${tiles}
     <p>${esc(last.verdict)}</p>
     ${last.advice ? `<p class="advice-box">💡 ${esc(last.advice)}</p>` : ""}
+    ${["C", "D", "F"].includes(last.grade) ? routerHelp("sqm") : ""}
     <p class="hint">Tested ${esc(ago(last.at))} · used ${Math.round(last.data_used_mb)} MB${last.location ? ` · Cloudflare ${esc(last.location)}` : ""}</p>
     ${older ? `<table class="dns-table"><thead><tr><th>Earlier</th><th>↓ Mbps</th><th>↑ Mbps</th><th>Busy delay</th><th>Grade</th></tr></thead><tbody>${older}</tbody></table>` : ""}
   </div>`;
@@ -505,6 +520,7 @@ function renderDoctor(d) {
       <p>${esc(c.detail)}</p>
       ${c.latency && c.latency.received ? `<p class="mono" style="color:var(--muted)">min ${c.latency.min_ms} · avg ${c.latency.avg_ms} · max ${c.latency.max_ms} ms · jitter ${c.latency.jitter_ms} ms · loss ${c.latency.loss_pct}%</p>` : ""}
       ${c.advice ? `<p class="advice">💡 ${esc(c.advice)}</p>` : ""}
+      ${routerHelp(c.topic)}
     </div>`).join("");
   const maxMs = Math.max(1, ...diag.dns.map((x) => x.median_ms || 0));
   const dns = diag.dns.length ? `<h4 class="day">DNS speed comparison</h4><table class="dns-table"><thead><tr><th>Server</th><th>Answer time</th><th style="width:40%"></th></tr></thead><tbody>

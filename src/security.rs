@@ -1,7 +1,7 @@
 //! Plain-language security advice. Each finding says what it means and what
 //! to do, and has a stable id so people can dismiss it.
 
-use crate::model::{Device, DeviceKind, Finding, NetworkInfo, PortMapping, RouterExposure, Severity};
+use crate::model::{Device, DeviceKind, Finding, FixTopic, NetworkInfo, PortMapping, RouterExposure, Severity};
 use crate::wifi::{SecurityRisk, WifiInfo};
 
 fn finding(
@@ -20,6 +20,7 @@ fn finding(
         fix: fix.to_string(),
         device_id: device.map(|d| d.id.clone()),
         ignored: false,
+        topic: None,
     }
 }
 
@@ -117,6 +118,11 @@ pub fn device_findings(d: &Device) -> Vec<Finding> {
         "Your internet provider uses this to manage the router. It has had serious bugs in the past and should not be reachable from inside your home network.",
         "Make sure the router firmware is up to date; ask your provider if you're unsure.",
     );
+    if d.is_gateway
+        && let Some(f) = out.iter_mut().find(|f| f.id.starts_with("port-7547:"))
+    {
+        f.topic = Some(FixTopic::Firmware);
+    }
 
     if d.has_port(445) && !matches!(d.kind, DeviceKind::Computer | DeviceKind::Nas | DeviceKind::Server) {
         out.push(finding(
@@ -146,7 +152,7 @@ pub fn device_findings(d: &Device) -> Vec<Finding> {
             "When you log in to the router, the password crosses the network as plain text. Anyone else on your Wi-Fi could capture it.",
             "Use the router's HTTPS admin page if it has one, and only log in from a wired connection or a network you trust. A firmware update may add HTTPS.",
             Some(d),
-        ));
+        ).with_topic(FixTopic::Firmware));
     }
     if d.is_gateway
         && d.upnp.as_ref().and_then(|u| u.device_type.as_deref()).is_some_and(|t| t.contains("InternetGatewayDevice"))
@@ -158,7 +164,7 @@ pub fn device_findings(d: &Device) -> Vec<Finding> {
             "UPnP lets games, video calls and smart devices open ports on your router automatically. It's convenient, but malware on any device can use it to expose itself to the internet.",
             "If nothing you use needs it (game consoles often do), turn UPnP off in the router's settings.",
             Some(d),
-        ));
+        ).with_topic(FixTopic::Upnp));
     }
     out
 }
@@ -222,6 +228,42 @@ pub fn network_findings(
     }
     if let Some(f) = wifi.and_then(wifi_finding) {
         out.push(f);
+    }
+
+    // Cheap smart gadgets rarely get updates; on a flat network one hacked
+    // camera can reach every laptop.
+    let gadgets: Vec<&Device> =
+        devices.iter().filter(|d| d.online && matches!(d.kind, DeviceKind::Camera | DeviceKind::SmartHome)).collect();
+    let computers = devices
+        .iter()
+        .filter(|d| {
+            d.is_self
+                || matches!(d.kind, DeviceKind::Computer | DeviceKind::Nas | DeviceKind::Phone | DeviceKind::Tablet)
+        })
+        .count();
+    if !gadgets.is_empty() && computers > 0 {
+        let risky = gadgets.iter().any(|g| g.findings.iter().any(|f| f.severity >= Severity::Low));
+        let names: Vec<&str> = gadgets.iter().take(3).map(|g| g.display_name()).collect();
+        let more = if gadgets.len() > 3 { format!(" and {} more", gadgets.len() - 3) } else { String::new() };
+        out.push(
+            finding(
+                "iot-mixed".into(),
+                if risky { Severity::Medium } else { Severity::Low },
+                format!(
+                    "{} smart-home gadget{} share{} your network with your computers",
+                    gadgets.len(),
+                    if gadgets.len() == 1 { "" } else { "s" },
+                    if gadgets.len() == 1 { "s" } else { "" }
+                ),
+                &format!(
+                    "Cameras, smart plugs and similar gadgets ({}{more}) rarely get security updates. If one is taken over, it sits on the same network as your laptops and phones and can reach them directly.",
+                    names.join(", ")
+                ),
+                "Most routers offer a guest network (some call it an IoT network). Connect cameras and smart-home gadgets to that instead, by re-pairing them with the guest Wi-Fi name and password, and keep computers and phones on the main network. If there's an option to stop guests seeing each other, turn it on.",
+                None,
+            )
+            .with_topic(FixTopic::GuestNetwork),
+        );
     }
 
     let unreviewed = devices.iter().filter(|d| !d.trusted && !d.is_self && !d.is_gateway).count();
@@ -293,6 +335,7 @@ fn mapping_finding(m: &PortMapping, devices: &[Device], shared_address: bool) ->
         fix: fix.to_string(),
         device_id: device.map(|d| d.id.clone()),
         ignored: false,
+        topic: Some(FixTopic::Upnp),
     }
 }
 
@@ -309,6 +352,7 @@ fn wifi_finding(w: &WifiInfo) -> Option<Finding> {
             fix: "If it's your network, turn on WPA2 or WPA3 (\"WPA2-Personal\", \"WPA3-Personal\") in the router's Wi-Fi settings and set a long password. If it's a café or hotel, use a VPN and avoid sharing files.".into(),
             device_id: None,
             ignored: false,
+            topic: Some(FixTopic::WifiSecurity),
         },
         SecurityRisk::Outdated => Finding {
             id: format!("wifi-outdated:{key}"),
@@ -318,6 +362,7 @@ fn wifi_finding(w: &WifiInfo) -> Option<Finding> {
             fix: "In the router's Wi-Fi settings, switch security to WPA2-Personal (AES) or WPA3-Personal. Very old devices that can't connect afterwards are worth replacing.".into(),
             device_id: None,
             ignored: false,
+            topic: Some(FixTopic::WifiSecurity),
         },
     })
 }
@@ -435,6 +480,37 @@ mod tests {
         assert_eq!(f.id, "wifi-outdated:Home");
         assert_eq!(f.title, "The Wi-Fi network \"Home\" uses outdated security");
         assert_eq!(wifi_finding(&w("--")).unwrap().severity, Severity::High);
+    }
+
+    #[test]
+    fn flags_gadgets_mixed_with_computers() {
+        let info = NetworkInfo {
+            interface: "en0".into(),
+            interface_label: None,
+            ip: Ipv4Addr::new(192, 168, 1, 2),
+            prefix: 24,
+            scan_range: "192.168.1.0/24".into(),
+            mac: None,
+            gateway: None,
+            gateway_mac: None,
+            dns_servers: vec![],
+            mtu: None,
+            link_speed_mbps: None,
+            wireless: false,
+        };
+        let mut me = dev(2, "00:00:00:00:00:02");
+        me.is_self = true;
+        let mut cam = dev(52, "00:00:00:00:00:52");
+        cam.kind = DeviceKind::Camera;
+        let f = network_findings(&info, &[me.clone(), cam.clone()], None, None, None);
+        let iot = f.iter().find(|f| f.id == "iot-mixed").unwrap();
+        assert_eq!(iot.severity, Severity::Low);
+        assert_eq!(iot.topic, Some(FixTopic::GuestNetwork));
+        cam.open_ports.push(OpenPort { port: 23, service: String::new(), banner: None });
+        cam.findings = device_findings(&cam);
+        let f = network_findings(&info, &[me, cam.clone()], None, None, None);
+        assert_eq!(f.iter().find(|f| f.id == "iot-mixed").unwrap().severity, Severity::Medium);
+        assert!(!network_findings(&info, &[cam], None, None, None).iter().any(|f| f.id == "iot-mixed"));
     }
 
     #[test]

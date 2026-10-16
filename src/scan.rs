@@ -283,6 +283,7 @@ pub async fn run(opts: &ScanOptions, progress: Progress) -> Result<ScanReport> {
         notes,
         exposure,
         wifi,
+        router_guide: None,
     })
 }
 
