@@ -198,7 +198,7 @@ fn scrub_free_text(text: &str, personal: &HashSet<String>) -> String {
 fn anonymise_device(d: &Device, n: usize) -> serde_json::Value {
     // Words from the maker and model are product words, never personal.
     let mut product_words = HashSet::new();
-    let mut add_words = |set: &mut HashSet<String>, s: &Option<String>| {
+    let add_words = |set: &mut HashSet<String>, s: &Option<String>| {
         for (w, piece) in pieces(s.as_deref().unwrap_or("")) {
             if w {
                 set.insert(piece.to_lowercase());
