@@ -30,6 +30,7 @@ NattoWok is a network scanner in the spirit of Fing. It's built around a differe
 | Cameras and smart plugs on the same network as your laptop | Flags gadgets that rarely get security updates sharing your main network, and walks you through moving them to the router's **guest/IoT network**. |
 | Reviewing a long list of devices is a chore | A **guided review** shows one device at a time: *Yes, it's mine* (name it as you go), *Not sure, help me find it* (switches on Live mode), *I don't recognise it* (with what to do next), or *Skip*. If NattoWok guessed the type wrong, pick the right one; your choice sticks across scans. |
 | Alerts that only reach you at your desk | **Phone alerts** through ntfy (free app, no account), Telegram, Discord or any webhook such as Home Assistant: `nattowok alerts ntfy`, or the bell menu. Tokens are kept in a settings file only you can read and are never shown in the dashboard. |
+| Checking on things from the sofa | **Open on your phone**: the phone button shows a QR code; scan it and the full dashboard opens in your phone's browser, no app needed (`nattowok phone` prints the code in the terminal). It uses its own private link, which you can replace or switch off any time. |
 | Wanting automation | `nattowok watch --on-new-device "…"` runs your command when something joins (send a notification, log it, turn on a light). |
 
 ### Devices explain themselves
@@ -90,6 +91,7 @@ nattowok export md -o report.md     # a report for whoever helps you with tech
 nattowok export anonymised -o sample.json   # scrubbed copy to help improve detection (read it, then share if you like)
 nattowok home                       # who's home, going by their phones
 nattowok router                     # where your router keeps the settings worth changing
+nattowok phone                      # QR code to open the dashboard on your phone (--new-link, --off)
 nattowok networks                   # the networks NattoWok remembers
 nattowok info                       # this computer's network settings
 nattowok update-vendors             # fetch the latest manufacturer list from the IEEE
@@ -158,6 +160,7 @@ Data lives in your OS data folder (`~/.local/share/nattowok`, `~/Library/Applica
 
 - **Local only.** Phone alerts, if you set them up, send their text to the service you chose. Apart from that, only three features talk to the internet, and only when you run them: the Internet doctor (a few TCP connects and DNS queries to Cloudflare, Google and Quad9, plus Google's standard connectivity check), the speed test (Cloudflare's public speed-test service) and `update-vendors` (downloads the IEEE's public registry). Nothing about your network is sent anywhere, and results stay on your computer.
 - **The dashboard listens on localhost by default.** Every API call needs a random per-run token embedded in the page, which other websites can't read. Requests whose `Host` isn't localhost are refused, which blocks DNS-rebinding attacks. `--listen 0.0.0.0:7878` exposes it on purpose; access then requires a key printed in the terminal.
+- **Phone access is off until you turn it on.** It then listens on this computer's local-network address too, answering only requests addressed to that address and carrying the phone link's own random key (separate from the desktop one). "Make a new link" or `nattowok phone --new-link` replaces the key; turning it off closes that listener. The connection is plain HTTP inside your network, so only use it on networks you trust.
 - **Polite scanning.** NattoWok only connects. It never logs in, never tries passwords, and only follows UPnP description URLs that point back at the device that announced them.
 - **The anonymised export is yours to share or not.** It removes names, notes and tags you added, IP addresses, the unique half of every hardware address (all of it for private addresses), your Wi-Fi name and your public address, and turns personal words in device-announced names into `*`. Nothing is uploaded; read the file before sending it anywhere.
 - **Router exposure is read-only.** NattoWok asks the router for its port-forwarding list; it never adds or removes mappings.

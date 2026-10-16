@@ -17,11 +17,19 @@ pub struct Settings {
     /// Phone alerts for the same events (contains tokens, so the file is
     /// readable only by its owner).
     pub alerts: Vec<crate::alerts::AlertTarget>,
+    /// Let devices on the local network open the dashboard with `phone_key`.
+    pub phone_access: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phone_key: Option<String>,
 }
 
 impl Settings {
     fn path(root: &Path) -> std::path::PathBuf {
         root.join("settings.json")
+    }
+
+    pub fn path_in(root: &Path) -> std::path::PathBuf {
+        Self::path(root)
     }
 
     pub fn load(root: &Path) -> Settings {
@@ -51,7 +59,7 @@ mod tests {
     fn roundtrips_and_defaults() {
         let dir = std::env::temp_dir().join(format!("nattowok-settings-{}", std::process::id()));
         assert_eq!(Settings::load(&dir), Settings::default());
-        let s = Settings { auto_scan_minutes: 15, notifications: true, alerts: vec![] };
+        let s = Settings { auto_scan_minutes: 15, notifications: true, ..Default::default() };
         s.save(&dir).unwrap();
         assert_eq!(Settings::load(&dir), s);
         #[cfg(unix)]

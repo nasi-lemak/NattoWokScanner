@@ -143,6 +143,15 @@ enum Command {
         #[arg(long)]
         notify: bool,
     },
+    /// Open the dashboard on your phone: shows a link and QR code
+    Phone {
+        /// Turn phone access off
+        #[arg(long, conflicts_with = "new_link")]
+        off: bool,
+        /// Make a new link; the old one stops working
+        #[arg(long)]
+        new_link: bool,
+    },
     /// Get alerts on your phone (ntfy, Telegram, Discord or a webhook)
     Alerts {
         #[command(subcommand)]
@@ -657,6 +666,33 @@ async fn run(cli: Cli) -> Result<()> {
                 }
                 None => print!("{text}"),
             }
+            Ok(())
+        }
+        Command::Phone { off, new_link } => {
+            let mut settings = nattowok::settings::Settings::load(&data_dir);
+            if off {
+                settings.phone_access = false;
+                settings.save(&data_dir)?;
+                println!("Phone access is off. A running NattoWok stops accepting phones within 20 seconds.");
+                return Ok(());
+            }
+            settings.phone_access = true;
+            if new_link || settings.phone_key.is_none() {
+                settings.phone_key = Some(web::random_token());
+            }
+            settings.save(&data_dir)?;
+            let ip = netinfo::detect(cli.interface.as_deref(), None)?.ip;
+            let url = format!("http://{ip}:7878/?key={}", settings.phone_key.as_deref().unwrap_or_default());
+            let code = qrcode::QrCode::new(url.as_bytes())?;
+            let qr = code
+                .render::<qrcode::render::unicode::Dense1x2>()
+                .dark_color(qrcode::render::unicode::Dense1x2::Light)
+                .light_color(qrcode::render::unicode::Dense1x2::Dark)
+                .build();
+            println!("\n{qr}\n");
+            println!("  Scan this with your phone's camera, or open: {url}\n");
+            println!("  {}", paint.dim("Your phone must be on the same Wi-Fi, and NattoWok must be running here (`nattowok` or the background service)."));
+            println!("  {}", paint.dim("Anyone on your network with this link can use the dashboard. `nattowok phone --new-link` replaces it; `--off` turns it off."));
             Ok(())
         }
         Command::Alerts { action } => {

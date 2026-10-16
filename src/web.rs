@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime};
 
 use anyhow::Result;
-use axum::extract::{Path, Query, Request, State};
+use axum::extract::{Extension, Path, Query, Request, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Response};
@@ -92,7 +92,11 @@ pub struct AppState {
     diagnosis: Mutex<Option<Diagnosis>>,
     speed: Arc<Mutex<Job>>,
     scan_opts: ScanOptions,
-    settings: Mutex<Settings>,
+    settings: Mutex<SettingsCell>,
+    /// The extra listener on the local network for phones, when on.
+    phone: Mutex<Option<PhoneListener>>,
+    /// The port the dashboard listens on, once bound.
+    port: std::sync::OnceLock<u16>,
     /// Started by `nattowok service install` rather than by hand.
     service_mode: bool,
     token: String,
@@ -100,6 +104,51 @@ pub struct AppState {
 }
 
 type Shared = Arc<AppState>;
+
+/// Preferences, re-read when the CLI changes the file (e.g. `nattowok alerts`).
+pub struct SettingsCell {
+    value: Settings,
+    mtime: Option<SystemTime>,
+}
+
+fn settings_mtime(root: &std::path::Path) -> Option<SystemTime> {
+    std::fs::metadata(Settings::path_in(root)).and_then(|m| m.modified()).ok()
+}
+
+impl SettingsCell {
+    fn new(root: &std::path::Path) -> Self {
+        SettingsCell { value: Settings::load(root), mtime: settings_mtime(root) }
+    }
+
+    fn save(&mut self, root: &std::path::Path) -> Result<()> {
+        self.value.save(root)?;
+        self.mtime = settings_mtime(root);
+        Ok(())
+    }
+}
+
+impl std::ops::Deref for SettingsCell {
+    type Target = Settings;
+    fn deref(&self) -> &Settings {
+        &self.value
+    }
+}
+
+impl std::ops::DerefMut for SettingsCell {
+    fn deref_mut(&mut self) -> &mut Settings {
+        &mut self.value
+    }
+}
+
+fn settings(state: &AppState) -> MutexGuard<'_, SettingsCell> {
+    let mut s = state.settings.lock().unwrap();
+    let now = settings_mtime(state.workspace.root());
+    if now.is_some() && now != s.mtime {
+        s.value = Settings::load(state.workspace.root());
+        s.mtime = now;
+    }
+    s
+}
 
 /// The current network's inventory, re-read first if the CLI changed it.
 fn current(state: &AppState) -> MutexGuard<'_, Current> {
@@ -146,18 +195,54 @@ fn host_is_local(headers: &HeaderMap) -> bool {
     matches!(name.as_str(), "localhost" | "127.0.0.1" | "[::1]")
 }
 
-async fn guard(State(state): State<Shared>, req: Request, next: Next) -> Response {
-    if !state.remote && !host_is_local(req.headers()) {
-        return (StatusCode::FORBIDDEN, "NattoWok only answers requests addressed to localhost.").into_response();
-    }
-    let path = req.uri().path();
-    if path.starts_with("/api/") {
+/// Who a listener serves.
+#[derive(Clone)]
+pub enum Access {
+    /// This computer, via localhost (or everyone, with `--listen` and a key).
+    Local,
+    /// Devices on the local network, addressed exactly as `host`, with the
+    /// phone key from the settings.
+    Phone { host: String },
+}
+
+/// The token a request must carry, decided by the guard.
+#[derive(Clone)]
+struct PageAccess {
+    token: String,
+    require_key: bool,
+}
+
+async fn guard(State((state, access)): State<(Shared, Access)>, mut req: Request, next: Next) -> Response {
+    let page = match &access {
+        Access::Local => {
+            if !state.remote && !host_is_local(req.headers()) {
+                return (StatusCode::FORBIDDEN, "NattoWok only answers requests addressed to localhost.")
+                    .into_response();
+            }
+            PageAccess { token: state.token.clone(), require_key: state.remote }
+        }
+        Access::Phone { host } => {
+            // Exact Host match blocks DNS-rebinding, as for localhost.
+            if req.headers().get(header::HOST).and_then(|h| h.to_str().ok()) != Some(host.as_str()) {
+                return (StatusCode::FORBIDDEN, format!("NattoWok only answers requests addressed to {host}."))
+                    .into_response();
+            }
+            // Read live, so turning access off or making a new link applies at once.
+            let s = settings(&state);
+            match s.phone_key.clone().filter(|_| s.phone_access) {
+                Some(key) => PageAccess { token: key, require_key: true },
+                None => return (StatusCode::FORBIDDEN, "Phone access to NattoWok is turned off.").into_response(),
+            }
+        }
+    };
+    if req.uri().path().starts_with("/api/") {
         let token = req.headers().get("x-nattowok-token").and_then(|v| v.to_str().ok());
-        if token != Some(state.token.as_str()) {
+        if token != Some(page.token.as_str()) {
             return ApiError(StatusCode::UNAUTHORIZED, "missing or wrong access token; reload the page".into())
                 .into_response();
         }
     }
+    req.extensions_mut().insert(page);
     next.run(req).await
 }
 
@@ -166,16 +251,122 @@ struct KeyQuery {
     key: Option<String>,
 }
 
-async fn index(State(state): State<Shared>, Query(q): Query<KeyQuery>) -> Response {
-    if state.remote && q.key.as_deref() != Some(state.token.as_str()) {
+async fn index(Extension(page): Extension<PageAccess>, Query(q): Query<KeyQuery>) -> Response {
+    if page.require_key && q.key.as_deref() != Some(page.token.as_str()) {
         return (
             StatusCode::UNAUTHORIZED,
-            Html("<p>Open the link printed in the terminal (it includes an access key).</p>"),
+            Html(
+                "<p>This link is missing its access key or has been replaced. Scan the QR code in NattoWok again.</p>",
+            ),
         )
             .into_response();
     }
-    let page = INDEX.replace("__NATTOWOK_TOKEN__", &state.token).replace("__VERSION__", env!("CARGO_PKG_VERSION"));
+    let page = INDEX.replace("__NATTOWOK_TOKEN__", &page.token).replace("__VERSION__", env!("CARGO_PKG_VERSION"));
     ([(header::CACHE_CONTROL, "no-store")], Html(page)).into_response()
+}
+
+pub struct PhoneListener {
+    addr: SocketAddr,
+    task: tokio::task::JoinHandle<()>,
+}
+
+/// This computer's address on the local network.
+fn lan_ip(state: &AppState) -> Result<std::net::Ipv4Addr> {
+    let ip = netinfo::detect(state.scan_opts.interface.as_deref(), None)?.ip;
+    anyhow::ensure!(!ip.is_loopback() && !ip.is_link_local(), "this computer has no usable local network address");
+    Ok(ip)
+}
+
+/// The link phones open, when phone access is on.
+fn phone_link(state: &AppState) -> Option<String> {
+    let port = *state.port.get()?;
+    let ip = lan_ip(state).ok()?;
+    if state.remote {
+        return Some(format!("http://{ip}:{port}/?key={}", state.token));
+    }
+    let s = settings(state);
+    let key = s.phone_key.clone().filter(|_| s.phone_access)?;
+    Some(format!("http://{ip}:{port}/?key={key}"))
+}
+
+/// Starts, moves or stops the phone listener to match the settings and the
+/// computer's current address. Safe to call often.
+async fn sync_phone(state: &Shared) {
+    let wanted = {
+        let s = settings(state);
+        s.phone_access && s.phone_key.is_some()
+    };
+    let Some(&port) = state.port.get() else { return };
+    // With --listen on all addresses, the main listener already serves phones.
+    if state.remote {
+        return;
+    }
+    let target = if wanted { lan_ip(state).ok().map(|ip| SocketAddr::from((ip, port))) } else { None };
+    let running = state.phone.lock().unwrap().as_ref().map(|p| p.addr);
+    if running == target {
+        return;
+    }
+    if let Some(old) = state.phone.lock().unwrap().take() {
+        old.task.abort();
+    }
+    let Some(addr) = target else { return };
+    match tokio::net::TcpListener::bind(addr).await {
+        Ok(listener) => {
+            let app = router(state.clone(), Access::Phone { host: addr.to_string() });
+            let task = tokio::spawn(async move {
+                let _ = axum::serve(listener, app).await;
+            });
+            *state.phone.lock().unwrap() = Some(PhoneListener { addr, task });
+        }
+        Err(e) => eprintln!("couldn't open phone access on {addr}: {e}"),
+    }
+}
+
+fn qr_svg(text: &str) -> Option<String> {
+    use qrcode::render::svg;
+    let code = qrcode::QrCode::new(text.as_bytes()).ok()?;
+    Some(
+        code.render::<svg::Color>()
+            .min_dimensions(200, 200)
+            .dark_color(svg::Color("#000"))
+            .light_color(svg::Color("#fff"))
+            .build(),
+    )
+}
+
+async fn phone_status(State(state): State<Shared>) -> Json<serde_json::Value> {
+    let link = phone_link(&state);
+    Json(json!({
+        "enabled": link.is_some(),
+        "always_on": state.remote,
+        "url": link,
+        "qr_svg": link.as_deref().and_then(qr_svg),
+    }))
+}
+
+#[derive(Deserialize)]
+struct PhoneUpdate {
+    enabled: Option<bool>,
+    #[serde(default)]
+    new_key: bool,
+}
+
+async fn update_phone(
+    State(state): State<Shared>,
+    Json(update): Json<PhoneUpdate>,
+) -> ApiResult<Json<serde_json::Value>> {
+    {
+        let mut s = settings(&state);
+        if let Some(on) = update.enabled {
+            s.phone_access = on;
+        }
+        if update.new_key || (s.phone_access && s.phone_key.is_none()) {
+            s.phone_key = Some(random_token());
+        }
+        s.save(state.workspace.root())?;
+    }
+    sync_phone(&state).await;
+    Ok(phone_status(State(state)).await)
 }
 
 fn asset(content_type: &'static str, body: &'static str) -> Response {
@@ -187,7 +378,7 @@ async fn state_json(State(state): State<Shared>) -> Json<serde_json::Value> {
     let events: Vec<_> = cur.inv.events.iter().rev().take(300).cloned().collect();
     let since = Utc::now() - chrono::Duration::days(crate::store::PRESENCE_DAYS + 1);
     let scan_log: Vec<_> = cur.inv.scan_log.iter().filter(|t| **t >= since).collect();
-    let settings = state.settings.lock().unwrap().clone();
+    let settings = settings(&state).clone();
     let next_scan_at = next_scan_due(&state, &cur, &settings);
     // Alert targets hold tokens; the page only ever sees descriptions.
     let settings_view = json!({
@@ -259,7 +450,7 @@ fn spawn_scan(state: Shared, automatic: bool) -> ApiResult<()> {
         };
         finish(&state.scan, error);
         if automatic {
-            let settings = state.settings.lock().unwrap().clone();
+            let settings = settings(&state).clone();
             if settings.notifications {
                 notify::send_for(&events).await;
             }
@@ -284,7 +475,9 @@ fn next_scan_due(state: &AppState, cur: &Current, settings: &Settings) -> Option
 async fn auto_scan_loop(state: Shared) {
     loop {
         tokio::time::sleep(Duration::from_secs(20)).await;
-        let settings = state.settings.lock().unwrap().clone();
+        // Picks up `nattowok phone` and address changes.
+        sync_phone(&state).await;
+        let settings = settings(&state).clone();
         if settings.auto_scan_minutes == 0 {
             continue;
         }
@@ -304,8 +497,8 @@ struct SettingsUpdate {
     notifications: Option<bool>,
 }
 
-async fn update_settings(State(state): State<Shared>, Json(update): Json<SettingsUpdate>) -> ApiResult<Json<Settings>> {
-    let mut s = state.settings.lock().unwrap();
+async fn update_settings(State(state): State<Shared>, Json(update): Json<SettingsUpdate>) -> ApiResult<StatusCode> {
+    let mut s = settings(&state);
     if let Some(m) = update.auto_scan_minutes {
         s.auto_scan_minutes = m.min(24 * 60);
     }
@@ -313,19 +506,20 @@ async fn update_settings(State(state): State<Shared>, Json(update): Json<Setting
         s.notifications = n;
     }
     s.save(state.workspace.root())?;
-    Ok(Json(s.clone()))
+    // Never echo settings back: they hold alert tokens and the phone key.
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn add_alert(State(state): State<Shared>, Json(target): Json<alerts::AlertTarget>) -> ApiResult<StatusCode> {
     target.validate().map_err(|e| ApiError(StatusCode::BAD_REQUEST, format!("{e:#}")))?;
-    let mut s = state.settings.lock().unwrap();
+    let mut s = settings(&state);
     s.alerts.push(target);
     s.save(state.workspace.root())?;
     Ok(StatusCode::NO_CONTENT)
 }
 
 async fn remove_alert(State(state): State<Shared>, Path(index): Path<usize>) -> ApiResult<StatusCode> {
-    let mut s = state.settings.lock().unwrap();
+    let mut s = settings(&state);
     if index >= s.alerts.len() {
         return Err(not_found("alert"));
     }
@@ -336,7 +530,7 @@ async fn remove_alert(State(state): State<Shared>, Path(index): Path<usize>) -> 
 
 /// Sends a test to every alert target and reports each result.
 async fn test_alerts(State(state): State<Shared>) -> Json<Vec<serde_json::Value>> {
-    let targets = state.settings.lock().unwrap().alerts.clone();
+    let targets = settings(&state).alerts.clone();
     let mut out = Vec::new();
     for t in &targets {
         let r = alerts::send(t, "NattoWok test", "Alerts from NattoWok will arrive here.", &[]).await;
@@ -553,7 +747,7 @@ async fn export(State(state): State<Shared>, Path(format): Path<String>) -> ApiR
     Ok(([(header::CONTENT_TYPE, mime.to_string()), (header::CONTENT_DISPOSITION, disposition)], body).into_response())
 }
 
-pub fn router(state: Shared) -> Router {
+pub fn router(state: Shared, access: Access) -> Router {
     Router::new()
         .route("/", get(index))
         .route("/app.js", get(|| async { asset("text/javascript; charset=utf-8", APP_JS) }))
@@ -577,7 +771,8 @@ pub fn router(state: Shared) -> Router {
         .route("/api/alerts", post(add_alert))
         .route("/api/alerts/test", post(test_alerts))
         .route("/api/alerts/{index}", axum::routing::delete(remove_alert))
-        .layer(middleware::from_fn_with_state(state.clone(), guard))
+        .route("/api/phone", get(phone_status).post(update_phone))
+        .layer(middleware::from_fn_with_state((state.clone(), access), guard))
         .with_state(state)
 }
 
@@ -601,7 +796,7 @@ async fn already_running(addr: SocketAddr) -> bool {
 pub async fn serve(opts: ServeOptions) -> Result<()> {
     let workspace = Workspace::new(opts.data_dir);
     let (key, inventory) = workspace.load_current(opts.scan_opts.interface.as_deref())?;
-    let settings = Settings::load(workspace.root());
+    let settings = SettingsCell::new(workspace.root());
     let current = Current::new(&workspace, key, inventory.clone());
     let remote = !opts.listen.ip().is_loopback();
     let token = random_token();
@@ -615,6 +810,8 @@ pub async fn serve(opts: ServeOptions) -> Result<()> {
         speed: Arc::default(),
         scan_opts: opts.scan_opts,
         settings: Mutex::new(settings),
+        phone: Mutex::new(None),
+        port: std::sync::OnceLock::new(),
         service_mode: opts.service_mode,
         token: token.clone(),
         remote,
@@ -636,6 +833,7 @@ pub async fn serve(opts: ServeOptions) -> Result<()> {
         ),
     };
     let addr = listener.local_addr()?;
+    let _ = state.port.set(addr.port());
     let url = if remote { format!("http://{addr}/?key={token}") } else { format!("http://localhost:{}/", addr.port()) };
     println!("NattoWok dashboard: {url}");
     if remote {
@@ -649,8 +847,12 @@ pub async fn serve(opts: ServeOptions) -> Result<()> {
     if opts.scan_on_start || !has_report {
         let _ = spawn_scan(state.clone(), opts.service_mode);
     }
+    sync_phone(&state).await;
+    if let Some(link) = phone_link(&state) {
+        println!("Phones on your network can open: {link}");
+    }
     tokio::spawn(auto_scan_loop(state.clone()));
-    axum::serve(listener, router(state))
+    axum::serve(listener, router(state, Access::Local))
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
         })
@@ -682,7 +884,9 @@ mod tests {
         Arc::new(AppState {
             workspace: Workspace::new(std::env::temp_dir().join(format!("nattowok-web-{}", std::process::id()))),
             current: Mutex::new(Current { key: "test".into(), inv: Inventory::default(), mtime: None }),
-            settings: Mutex::new(Settings::default()),
+            settings: Mutex::new(SettingsCell { value: Settings::default(), mtime: None }),
+            phone: Mutex::new(None),
+            port: std::sync::OnceLock::new(),
             service_mode: false,
             scan: Arc::default(),
             doctor: Arc::default(),
@@ -695,12 +899,12 @@ mod tests {
     }
 
     async fn status(req: HttpRequest<Body>) -> StatusCode {
-        router(test_state()).oneshot(req).await.unwrap().status()
+        router(test_state(), Access::Local).oneshot(req).await.unwrap().status()
     }
 
     #[tokio::test]
     async fn serves_index_with_token() {
-        let resp = router(test_state())
+        let resp = router(test_state(), Access::Local)
             .oneshot(HttpRequest::get("/").header("host", "localhost:7878").body(Body::empty()).unwrap())
             .await
             .unwrap();
@@ -742,6 +946,65 @@ mod tests {
             .body(Body::from("{\"other\":\"BB:BB:BB:BB:BB:BB\"}"))
             .unwrap();
         assert_eq!(status(req).await, StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn phone_access_needs_its_own_key_and_address() {
+        let state = test_state();
+        {
+            let mut s = state.settings.lock().unwrap();
+            s.value.phone_access = true;
+            s.value.phone_key = Some("phonekey".into());
+        }
+        let app = || router(state.clone(), Access::Phone { host: "192.168.1.10:7878".into() });
+        let get = |path: &str, host: &str, token: Option<&str>| {
+            let mut r = HttpRequest::get(path).header("host", host);
+            if let Some(t) = token {
+                r = r.header("x-nattowok-token", t);
+            }
+            r.body(Body::empty()).unwrap()
+        };
+        let code = |r: Response| r.status();
+        // Rebinding attempt with another host name.
+        assert_eq!(
+            code(app().oneshot(get("/?key=phonekey", "evil.example:7878", None)).await.unwrap()),
+            StatusCode::FORBIDDEN
+        );
+        // No key, wrong key, the desktop token: all refused.
+        assert_eq!(code(app().oneshot(get("/", "192.168.1.10:7878", None)).await.unwrap()), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            code(app().oneshot(get("/api/state", "192.168.1.10:7878", Some("secret"))).await.unwrap()),
+            StatusCode::UNAUTHORIZED
+        );
+        // The phone key works, and the page carries it.
+        let resp = app().oneshot(get("/?key=phonekey", "192.168.1.10:7878", None)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("phonekey"));
+        assert_eq!(
+            code(app().oneshot(get("/api/state", "192.168.1.10:7878", Some("phonekey"))).await.unwrap()),
+            StatusCode::OK
+        );
+        // Turning it off applies immediately.
+        state.settings.lock().unwrap().value.phone_access = false;
+        assert_eq!(
+            code(app().oneshot(get("/api/state", "192.168.1.10:7878", Some("phonekey"))).await.unwrap()),
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    #[tokio::test]
+    async fn settings_are_never_echoed() {
+        let state = test_state();
+        state.settings.lock().unwrap().value.phone_key = Some("phonekey".into());
+        let req = HttpRequest::get("/api/state")
+            .header("host", "localhost")
+            .header("x-nattowok-token", "secret")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router(state, Access::Local).oneshot(req).await.unwrap();
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        assert!(!String::from_utf8_lossy(&body).contains("phonekey"));
     }
 
     #[tokio::test]

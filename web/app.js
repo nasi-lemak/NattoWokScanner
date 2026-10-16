@@ -1005,6 +1005,7 @@ document.addEventListener("click", async (e) => {
   if (!e.target.closest(".menu")) {
     $("#export-menu").hidden = true;
     $("#settings-menu").hidden = true;
+    $("#phone-menu").hidden = true;
   }
   if (!t) return;
   if (t.dataset.device) return openDrawer(t.dataset.device);
@@ -1040,10 +1041,59 @@ $("#scan-btn").onclick = async () => {
   try { await api("/api/scan", { method: "POST" }); } catch (e) { toast(e.message); }
   refresh();
 };
+// ---------- phone access ----------
+
+async function renderPhone() {
+  const body = $("#phone-body");
+  let p;
+  try { p = await api("/api/phone"); } catch (e) { body.innerHTML = `<p class="hint">${esc(e.message)}</p>`; return; }
+  if (!p.enabled) {
+    body.innerHTML = `<p>See your network from your phone's browser. No app needed; the phone just has to be on the same Wi-Fi.</p>
+      <button class="btn small primary" id="phone-on">Turn on</button>
+      <p class="hint">NattoWok makes a private link for it. Anyone on your Wi-Fi with that link can use the dashboard, so only share it with people you trust.</p>`;
+    $("#phone-on").onclick = () => setPhone({ enabled: true });
+    return;
+  }
+  body.innerHTML = `<div class="qr">${p.qr_svg || ""}</div>
+    <p class="hint">Scan with your phone's camera, or open:</p>
+    <p class="phone-url mono">${esc(p.url)}</p>
+    <div class="actions">
+      <button class="btn small" id="phone-copy">Copy link</button>
+      ${p.always_on ? "" : `<button class="btn small" id="phone-new">Make a new link</button>
+      <button class="btn small danger" id="phone-off">Turn off</button>`}
+    </div>
+    <p class="hint">${p.always_on ? "NattoWok was started to be reachable from other devices, so this is always on." : "A new link stops the old one working."}</p>`;
+  $("#phone-copy").onclick = async () => {
+    try { await navigator.clipboard.writeText(p.url); toast("Link copied"); } catch (_) { toast(p.url); }
+  };
+  $("#phone-new")?.addEventListener("click", () => setPhone({ new_key: true }));
+  $("#phone-off")?.addEventListener("click", () => setPhone({ enabled: false }));
+}
+
+async function setPhone(change) {
+  try {
+    await api("/api/phone", { method: "POST", body: JSON.stringify(change) });
+    await renderPhone();
+  } catch (e) { toast(e.message); }
+}
+
+// On the phone itself there's nothing to set up.
+if (!["localhost", "127.0.0.1", "[::1]"].includes(location.hostname)) $("#phone-btn").parentElement.hidden = true;
+
+$("#phone-btn").onclick = () => {
+  const m = $("#phone-menu");
+  m.hidden = !m.hidden;
+  $("#phone-btn").setAttribute("aria-expanded", String(!m.hidden));
+  $("#settings-menu").hidden = true;
+  $("#export-menu").hidden = true;
+  if (!m.hidden) renderPhone();
+};
+
 $("#settings-btn").onclick = () => {
   const m = $("#settings-menu");
   m.hidden = !m.hidden;
   $("#export-menu").hidden = true;
+  $("#phone-menu").hidden = true;
   $("#settings-btn").setAttribute("aria-expanded", String(!m.hidden));
 };
 async function saveSettings(patch) {
@@ -1106,6 +1156,7 @@ $("#export-btn").onclick = () => {
   const m = $("#export-menu");
   m.hidden = !m.hidden;
   $("#settings-menu").hidden = true;
+  $("#phone-menu").hidden = true;
   $("#export-btn").setAttribute("aria-expanded", String(!m.hidden));
 };
 $("#scrim").onclick = closeDrawer;

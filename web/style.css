@@ -326,6 +326,10 @@ textarea { min-height: 70px; resize: vertical; }
 .alert-add .hint { margin: 0; }
 .settings-panel { max-height: 80vh; overflow-y: auto; }
 
+.qr { display: flex; justify-content: center; }
+.qr svg { width: 200px; height: 200px; border-radius: 8px; }
+.phone-url { overflow-wrap: anywhere; margin: 0; font-size: 12px; }
+
 /* Guided review */
 .review { width: min(560px, calc(100vw - 32px)); border: 1px solid var(--border); border-radius: 16px; padding: 18px 20px; background: var(--surface); color: var(--text); box-shadow: var(--shadow); }
 .review::backdrop { background: rgba(0, 0, 0, .35); }

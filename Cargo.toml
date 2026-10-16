@@ -17,6 +17,7 @@ dirs = "6"
 flate2 = "1"
 getrandom = "0.3"
 netdev = { version = "0.46", default-features = false, features = ["gateway"] }
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"], optional = true }
 rustls-native-certs = { version = "0.8", optional = true }
 serde = { version = "1", features = ["derive"] }
