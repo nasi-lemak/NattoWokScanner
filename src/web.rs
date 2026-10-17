@@ -23,6 +23,7 @@ use serde_json::json;
 
 use crate::doctor::{self, Diagnosis};
 use crate::model::OpenPort;
+use crate::room::RoomCheck;
 use crate::scan::{self, ScanOptions};
 use crate::settings::Settings;
 #[cfg(feature = "tls")]
@@ -91,6 +92,8 @@ pub struct AppState {
     doctor: Arc<Mutex<Job>>,
     diagnosis: Mutex<Option<Diagnosis>>,
     speed: Arc<Mutex<Job>>,
+    room: Arc<Mutex<Job>>,
+    room_check: Mutex<Option<RoomCheck>>,
     scan_opts: ScanOptions,
     settings: Mutex<SettingsCell>,
     /// The extra listener on the local network for phones, when on.
@@ -402,6 +405,9 @@ async fn state_json(State(state): State<Shared>) -> Json<serde_json::Value> {
         "speed": *state.speed.lock().unwrap(),
         "speed_history": speed_history(&state),
         "diagnosis": *state.diagnosis.lock().unwrap(),
+        "room": *state.room.lock().unwrap(),
+        "room_check": *state.room_check.lock().unwrap(),
+        "room_guide": crate::room::guide(),
     }))
 }
 
@@ -563,6 +569,23 @@ async fn start_doctor(State(state): State<Shared>) -> ApiResult<StatusCode> {
             Err(e) => Some(format!("{e:#}")),
         };
         finish(&state.doctor, error);
+    });
+    Ok(StatusCode::ACCEPTED)
+}
+
+async fn start_room_check(State(state): State<Shared>) -> ApiResult<StatusCode> {
+    begin(&state.room)?;
+    tokio::spawn(async move {
+        let result =
+            crate::room::run(&state.scan_opts, progress_into(state.room.clone()), state.workspace.root()).await;
+        let error = match result {
+            Ok(check) => {
+                *state.room_check.lock().unwrap() = Some(check);
+                None
+            }
+            Err(e) => Some(format!("{e:#}")),
+        };
+        finish(&state.room, error);
     });
     Ok(StatusCode::ACCEPTED)
 }
@@ -757,6 +780,7 @@ pub fn router(state: Shared, access: Access) -> Router {
         .route("/api/scan", post(start_scan))
         .route("/api/doctor", post(start_doctor))
         .route("/api/speedtest", post(start_speedtest_route))
+        .route("/api/room-check", post(start_room_check))
         .route("/api/trust-all", post(trust_all))
         .route("/api/devices/{id}", patch(update_device).delete(forget_device))
         .route("/api/devices/{id}/wake", post(wake_device))
@@ -801,6 +825,7 @@ pub async fn serve(opts: ServeOptions) -> Result<()> {
     let remote = !opts.listen.ip().is_loopback();
     let token = random_token();
     let has_report = inventory.last_report.is_some();
+    let last_room_check = crate::room::load_last(workspace.root());
     let state = Arc::new(AppState {
         workspace,
         current: Mutex::new(current),
@@ -808,6 +833,8 @@ pub async fn serve(opts: ServeOptions) -> Result<()> {
         doctor: Arc::default(),
         diagnosis: Mutex::new(None),
         speed: Arc::default(),
+        room: Arc::default(),
+        room_check: Mutex::new(last_room_check),
         scan_opts: opts.scan_opts,
         settings: Mutex::new(settings),
         phone: Mutex::new(None),
@@ -892,6 +919,8 @@ mod tests {
             doctor: Arc::default(),
             diagnosis: Mutex::new(None),
             speed: Arc::default(),
+            room: Arc::default(),
+            room_check: Mutex::default(),
             scan_opts: ScanOptions::default(),
             token: "secret".into(),
             remote: false,

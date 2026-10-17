@@ -12,7 +12,7 @@ use chrono::Utc;
 use tokio::sync::Semaphore;
 
 use crate::model::{Device, ScanReport};
-use crate::{dns, identify, mdns, neighbors, netbios, netinfo, oui, probe, ssdp, upnp};
+use crate::{dns, identify, mdns, neighbors, netbios, netinfo, onvif, oui, probe, ssdp, upnp};
 
 #[derive(Debug, Clone)]
 pub struct ScanOptions {
@@ -126,8 +126,13 @@ pub async fn run(opts: &ScanOptions, progress: Progress) -> Result<ScanReport> {
     let listen = Duration::from_secs(3);
     let wireless = info.wireless;
     let wifi_read = async { if wireless { crate::wifi::read().await } else { None } };
-    let (alive, mdns_hosts, ssdp_hosts, wifi) =
-        tokio::join!(knocks.join_all(), mdns::discover(info.ip, listen), ssdp::discover(info.ip, listen), wifi_read);
+    let (alive, mdns_hosts, ssdp_hosts, onvif_hosts, wifi) = tokio::join!(
+        knocks.join_all(),
+        mdns::discover(info.ip, listen),
+        ssdp::discover(info.ip, listen),
+        onvif::discover(info.ip, listen),
+        wifi_read
+    );
     let mut latency: HashMap<Ipv4Addr, f64> = alive.into_iter().flatten().collect();
 
     // Phase 2: the ARP table now also knows silent devices we poked.
@@ -144,6 +149,7 @@ pub async fn run(opts: &ScanOptions, progress: Progress) -> Result<ScanReport> {
     ips.extend(arp.keys().filter(|ip| in_range.contains(ip)));
     ips.extend(mdns_hosts.keys().filter(|ip| in_range.contains(ip)));
     ips.extend(ssdp_hosts.keys().filter(|ip| in_range.contains(ip)));
+    ips.extend(onvif_hosts.keys().filter(|ip| in_range.contains(ip)));
     if let Some(gw) = info.gateway.filter(|g| in_range.contains(g)) {
         ips.insert(gw);
     }
@@ -264,10 +270,27 @@ pub async fn run(opts: &ScanOptions, progress: Progress) -> Result<ScanReport> {
         if let Some(h) = mh {
             d.advertised = h.services.iter().cloned().collect();
         }
+        let onvif = onvif_hosts.get(&ip);
+        if let Some(o) = onvif {
+            let (service, description) = if o.video {
+                (identify::ONVIF_VIDEO, "ONVIF video (a camera or video recorder)")
+            } else {
+                (identify::ONVIF, "ONVIF security device")
+            };
+            d.advertised.push(crate::model::Advertised {
+                service: service.into(),
+                description: description.into(),
+                instance: o.name.clone(),
+                port: None,
+            });
+        }
         d.upnp = upnp.get(&ip).cloned();
         d.open_ports = ports.remove(&ip).unwrap_or_default();
         d.latency_ms = latency.remove(&ip).map(|ms| (ms * 10.0).round() / 10.0);
         identify::identify(&mut d, mh.map(|h| &h.txt).unwrap_or(&empty_txt));
+        if d.model.is_none() {
+            d.model = onvif.and_then(|o| o.hardware.clone());
+        }
         devices.push(d);
     }
     devices.sort_by_key(|d| d.ip);

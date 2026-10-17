@@ -11,7 +11,7 @@ use nattowok::doctor::{self, Status};
 use nattowok::model::{Device, ScanReport, Severity};
 use nattowok::scan::{self, ScanOptions};
 use nattowok::store::{DeviceUpdate, Event, Inventory, Workspace};
-use nattowok::{netinfo, probe, report, web, wol};
+use nattowok::{netinfo, probe, report, room, web, wol};
 
 /// See who's on your network, what they are, and whether anything needs fixing.
 /// Runs entirely on this computer: no account, no cloud.
@@ -63,6 +63,14 @@ enum Command {
     },
     /// Find out why the internet is slow or broken
     Doctor {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Look for hidden cameras on the Wi-Fi of a rental or hotel room.
+    /// Only finds devices: never logs in to them or opens their video.
+    /// Not saved to your device list
+    #[command(alias = "sweep")]
+    RoomCheck {
         #[arg(long)]
         json: bool,
     },
@@ -471,6 +479,16 @@ async fn run(cli: Cli) -> Result<()> {
                     r.location.as_deref().map(|l| format!(" · server: Cloudflare {l}")).unwrap_or_default()
                 ))
             );
+            Ok(())
+        }
+        Command::RoomCheck { json } => {
+            let opts = ScanOptions { interface: cli.interface.clone(), ..Default::default() };
+            let check = room::run(&opts, terminal_progress(), &data_dir).await?;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&check)?);
+            } else {
+                print_room_check(&paint, &check);
+            }
             Ok(())
         }
         Command::Ports { device, json } => {
@@ -1150,4 +1168,79 @@ fn print_report(paint: &Paint, report: &ScanReport, events: &[Event]) {
         );
     }
     println!();
+}
+
+fn print_room_check(paint: &Paint, check: &room::RoomCheck) {
+    use room::Verdict;
+    let seen = check.devices.len();
+    println!(
+        "\n  {} {}",
+        paint.bold(&format!("Room check on \"{}\"", check.network)),
+        paint.dim(&format!("({seen} other device{} seen)", if seen == 1 { "" } else { "s" }))
+    );
+    let headline = &check.headline;
+    let headline = if room::count(check, Verdict::Likely) > 0 {
+        paint.red(headline)
+    } else if room::count(check, Verdict::Unsure) > 0 || !check.hotspots.is_empty() || check.isolated {
+        paint.yellow(headline)
+    } else {
+        paint.green(headline)
+    };
+    println!("  {}\n", paint.bold(&headline));
+    if check.isolated {
+        println!(
+            "  {} No other devices are visible. Hotel and guest Wi-Fi often hide devices from each other,\n    so a camera on it wouldn't show up either. Rely on the checks below.\n",
+            paint.yellow("!")
+        );
+    }
+    let section = |title: &str, verdict: Verdict, mark: String| {
+        let list: Vec<_> = check.devices.iter().filter(|d| d.verdict == verdict).collect();
+        if list.is_empty() {
+            return;
+        }
+        println!("  {}", paint.bold(title));
+        for d in list {
+            let vendor = d.vendor.as_deref().map(|v| format!("  {v}")).unwrap_or_default();
+            println!("  {mark} {} {}{}", d.name, paint.dim(&format!("({})", d.ip)), paint.dim(&vendor));
+            for r in &d.reasons {
+                println!("      • {r}");
+            }
+        }
+        println!();
+    };
+    section("Likely cameras", Verdict::Likely, paint.red("✗"));
+    section("Find these and have a look", Verdict::Unsure, paint.yellow("!"));
+    if !check.hotspots.is_empty() {
+        println!("  {}", paint.bold("Wi-Fi networks named like a camera's own hotspot"));
+        for h in &check.hotspots {
+            let signal = h.signal_percent.map(|s| format!("  signal {s}%")).unwrap_or_default();
+            println!("  {} {}{}", paint.yellow("!"), h.ssid, paint.dim(&signal));
+        }
+        println!("      • Cameras broadcast one while being set up, or to stream without the host's Wi-Fi.");
+        println!("        A stronger signal means it's closer: walk around and run the check again.\n");
+    }
+    if !check.gone.is_empty() {
+        println!("  {}", paint.bold("Gone since the last check (what you unplugged?)"));
+        for d in &check.gone {
+            println!("  {} {} {}", paint.blue("↓"), d.name, paint.dim(&format!("({})", d.ip)));
+        }
+        println!();
+    }
+    let fine: Vec<&str> =
+        check.devices.iter().filter(|d| d.verdict == Verdict::Fine).map(|d| d.name.as_str()).collect();
+    if !fine.is_empty() {
+        println!("  {} {}\n", paint.green(&format!("Fine ({}):", fine.len())), fine.join(", "));
+    }
+    for n in &check.notes {
+        println!("  {}", paint.dim(n));
+    }
+    println!("\n  {}", paint.bold("What this can't see"));
+    for line in room::CANT_SEE {
+        println!("  – {line}");
+    }
+    println!("\n  {}", paint.bold("Also check by hand"));
+    for (i, (title, text)) in room::CHECKLIST.iter().enumerate() {
+        println!("  {}. {}: {text}", i + 1, paint.bold(title));
+    }
+    println!("\n  {}", paint.dim("NattoWok only finds devices. It never logs in to them or opens their video."));
 }

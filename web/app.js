@@ -148,7 +148,7 @@ async function refresh() {
 
 function schedulePoll() {
   clearTimeout(state.pollTimer);
-  const busy = state.data?.scan?.running || state.data?.doctor?.running || state.data?.speed?.running;
+  const busy = state.data?.scan?.running || state.data?.doctor?.running || state.data?.speed?.running || state.data?.room?.running;
   state.pollTimer = setTimeout(refresh, busy ? 800 : 20000);
 }
 
@@ -163,6 +163,7 @@ function render() {
   renderSecurity(report);
   renderDoctor(d);
   renderTimeline(d.events);
+  renderRoom(d);
   if (state.openDevice) {
     const dev = report?.devices.find((x) => x.id === state.openDevice);
     const a = document.activeElement;
@@ -206,7 +207,7 @@ function renderHeader(d) {
   const btn = $("#scan-btn");
   btn.disabled = scan.running;
   btn.querySelector(".scan-label").textContent = scan.running ? "Scanning…" : "Scan network";
-  const job = scan.running ? scan : d.doctor.running ? d.doctor : d.speed?.running ? d.speed : null;
+  const job = scan.running ? scan : d.doctor.running ? d.doctor : d.speed?.running ? d.speed : d.room?.running ? d.room : null;
   $("#progress").hidden = !job;
   if (job) {
     $("#progress-fill").style.width = `${Math.round(job.progress * 100)}%`;
@@ -667,6 +668,62 @@ function renderDoctor(d) {
     ${speedPanel(d)}`;
 }
 
+// ---------- room check ----------
+
+function roomDevice(x, cls, label) {
+  const meta = [x.ip, x.vendor].filter(Boolean).join(" · ");
+  return `<div class="finding ${cls} room-device">
+      <h3><span class="kind-icon small">${icon(x.kind)}</span>${esc(x.name)} <span class="badge ${cls === "high" ? "bad" : "warn"}">${label}</span></h3>
+      <p class="mono hint">${esc(meta)}</p>
+      <ul class="reasons">${x.reasons.map((r) => `<li>${esc(r)}</li>`).join("")}</ul>
+    </div>`;
+}
+
+function renderRoom(d) {
+  const el = $("#tab-room");
+  const job = d.room || {};
+  const check = d.room_check;
+  const guide = d.room_guide || { cant_see: [], checklist: [] };
+  const likely = check ? check.devices.filter((x) => x.verdict === "likely") : [];
+  const unsure = check ? check.devices.filter((x) => x.verdict === "unsure") : [];
+  const fine = check ? check.devices.filter((x) => x.verdict === "fine") : [];
+  const count = $("#tab-room-count");
+  count.textContent = likely.length || "";
+  count.classList.toggle("alert", likely.length > 0);
+  const intro = `<div class="banner" style="background:var(--surface-2)">
+      <span><strong>Staying somewhere new?</strong> Join the place's Wi-Fi and check it for hidden cameras. NattoWok only finds devices: it never logs in to them or opens their video, and a room check isn't added to your device list.</span>
+      <button class="btn primary" id="room-btn" ${job.running ? "disabled" : ""}>${job.running ? "Checking…" : check ? "Check again" : "Check this room"}</button>
+    </div>`;
+  const error = job.error ? `<p class="badge bad">${esc(job.error)}</p>` : "";
+  const manual = `<div class="room-guide">
+      <div class="check"><h4>What this can't see</h4><ul>${guide.cant_see.map((x) => `<li>${esc(x)}</li>`).join("")}</ul></div>
+      <div class="check"><h4>Also check by hand</h4><ol>${guide.checklist.map((x) => `<li><strong>${esc(x.title)}.</strong> ${esc(x.text)}</li>`).join("")}</ol></div>
+    </div>`;
+  if (!check) {
+    el.innerHTML = intro + error + manual;
+    return;
+  }
+  const tone = likely.length ? "fail" : unsure.length || check.hotspots.length || check.isolated ? "warn" : "pass";
+  const seen = check.devices.length;
+  const sub = `On “${esc(check.network)}” · checked ${esc(ago(check.checked_at))} · ${seen} other device${seen === 1 ? "" : "s"} seen`;
+  const isolated = check.isolated ? `<div class="check"><p><strong>This network hides devices from each other.</strong> Hotel and guest Wi-Fi often do, so a camera on it wouldn't show up either. Rely on the checks by hand below.</p></div>` : "";
+  const gone = check.gone.length ? `<div class="check gone"><p><strong>Gone since the last check:</strong> ${check.gone.map((x) => esc(x.name)).join(", ")}. If you just unplugged something, that's what it was.</p></div>` : "";
+  const hotspots = check.hotspots.length ? `<div class="finding medium">
+      <h3>Wi-Fi networks named like a camera's own hotspot <span class="badge warn">have a look</span></h3>
+      <ul class="reasons">${check.hotspots.map((h) => `<li><strong>${esc(h.ssid)}</strong>${h.signal_percent != null ? ` <span class="hint">signal ${h.signal_percent}%</span>` : ""}</li>`).join("")}</ul>
+      <p class="hint">Cameras broadcast one while being set up, or to stream without the host's Wi-Fi. A stronger signal means it's closer: walk around and check again.</p>
+    </div>` : "";
+  const fineList = fine.length ? `<details class="room-fine"><summary>Fine (${fine.length})</summary><ul>${fine.map((x) => `<li><strong>${esc(x.name)}</strong> <span class="hint">${esc(x.reasons.join(" · "))}</span></li>`).join("")}</ul></details>` : "";
+  el.innerHTML = `${intro}${error}
+    <div class="verdict ${tone}"><h2>${esc(check.headline)}</h2><p>${sub}</p></div>
+    ${isolated}${gone}
+    ${likely.length ? `<h4 class="day">Likely cameras</h4>${likely.map((x) => roomDevice(x, "high", "likely camera")).join("")}` : ""}
+    ${unsure.length || check.hotspots.length ? `<h4 class="day">Find these and have a look</h4>${unsure.map((x) => roomDevice(x, "medium", "have a look")).join("")}${hotspots}` : ""}
+    ${fineList}
+    ${(check.notes || []).map((n) => `<div class="note">ⓘ ${esc(n)}</div>`).join("")}
+    ${manual}`;
+}
+
 // ---------- presence ----------
 
 const HOUR = 3600000;
@@ -1001,7 +1058,7 @@ function setFilter(filter) {
 }
 
 document.addEventListener("click", async (e) => {
-  const t = e.target.closest("[data-device],[data-tab],[data-filter],[data-goto-filter],[data-goto-tab],[data-ignore],[data-unignore],[data-export],#trust-all,#review-start,#doctor-btn,#speed-btn");
+  const t = e.target.closest("[data-device],[data-tab],[data-filter],[data-goto-filter],[data-goto-tab],[data-ignore],[data-unignore],[data-export],#trust-all,#review-start,#doctor-btn,#speed-btn,#room-btn");
   if (!e.target.closest(".menu")) {
     $("#export-menu").hidden = true;
     $("#settings-menu").hidden = true;
@@ -1033,6 +1090,7 @@ document.addEventListener("click", async (e) => {
     if (t.id === "trust-all") { const r = await api("/api/trust-all", { method: "POST" }); toast(`Marked ${r.trusted} devices as trusted`); }
     if (t.id === "doctor-btn") await api("/api/doctor", { method: "POST" });
     if (t.id === "speed-btn") await api("/api/speedtest", { method: "POST" });
+    if (t.id === "room-btn") await api("/api/room-check", { method: "POST" });
     await refresh();
   } catch (err) { toast(err.message); }
 });

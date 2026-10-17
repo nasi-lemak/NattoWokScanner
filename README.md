@@ -31,6 +31,7 @@ NattoWok is a network scanner in the spirit of Fing. It's built around a differe
 | Reviewing a long list of devices is a chore | A **guided review** shows one device at a time: *Yes, it's mine* (name it as you go), *Not sure, help me find it* (switches on Live mode), *I don't recognise it* (with what to do next), or *Skip*. If NattoWok guessed the type wrong, pick the right one; your choice sticks across scans. |
 | Alerts that only reach you at your desk | **Phone alerts** through ntfy (free app, no account), Telegram, Discord or any webhook such as Home Assistant: `nattowok alerts ntfy`, or the bell menu. Tokens are kept in a settings file only you can read and are never shown in the dashboard. |
 | Checking on things from the sofa | **Open on your phone**: the phone button shows a QR code; scan it and the full dashboard opens in your phone's browser, no app needed (`nattowok phone` prints the code in the terminal). It uses its own private link, which you can replace or switch off any time. |
+| Worrying about hidden cameras in a rental or hotel room | **Room check** (`nattowok room-check`, or the Room check tab, handy on your phone) joins the dots for you: devices that answer as ONVIF cameras, open video streams, camera-maker control ports, cheap Wi-Fi chips used in hidden cameras, and nearby Wi-Fi networks named like a camera's hotspot. Results come as *likely camera*, *find it and have a look* or *fine*, each with reasons, plus an honest list of what a network check can't see and the checks to do by hand. Unplug something and check again: whatever vanished is listed. |
 | Wanting automation | `nattowok watch --on-new-device "…"` runs your command when something joins (send a notification, log it, turn on a light). |
 
 ### Devices explain themselves
@@ -91,6 +92,7 @@ nattowok export md -o report.md     # a report for whoever helps you with tech
 nattowok export anonymised -o sample.json   # scrubbed copy to help improve detection (read it, then share if you like)
 nattowok home                       # who's home, going by their phones
 nattowok router                     # where your router keeps the settings worth changing
+nattowok room-check                 # look for hidden cameras on a rental or hotel Wi-Fi
 nattowok phone                      # QR code to open the dashboard on your phone (--new-link, --off)
 nattowok networks                   # the networks NattoWok remembers
 nattowok info                       # this computer's network settings
@@ -108,6 +110,18 @@ Every device can be named, unknown ones included. Names are tied to the device's
 3. When a row turns red with *"stopped answering"*, that's the one. Click **Name it**.
 
 Live mode can only follow devices that answer quick checks. The rare device that ignores everything shows *"not answering"* from the start; for those, run a scan before and after unplugging and look at what went offline.
+
+### Checking a room for hidden cameras
+
+Join the place's Wi-Fi, open the **Room check** tab (or run `nattowok room-check`) and press **Check this room**. Opening the dashboard on your phone first lets you walk around with it.
+
+- **Likely camera**: it answered as an ONVIF video device, has a video stream (RTSP) or a camera-maker control port open (Dahua 37777, Xiongmai 34567), names itself as a camera, or was identified as one.
+- **Find it and have a look**: smart-home gadgets, smart speakers (microphones), devices with Wi-Fi chips common in cheap cameras (Espressif, Tuya, Beken, AltoBeam…), Tuya's control port, anything we couldn't identify, and nearby Wi-Fi networks named like a camera's own hotspot (with signal strength: stronger is closer).
+- **Fine**: phones, laptops, TVs, printers and the router. Devices with private Wi-Fi addresses count as fine, because phones and laptops use those and cameras generally don't.
+
+To find which object a device is, unplug things one at a time and check again: the result lists what has gone since the last check. A room check isn't added to your device list; only the latest result is kept (`room-check.json` in the data folder) so that comparison works.
+
+A clean result is not a guarantee. A network check can't see cameras on another network (the host's private Wi-Fi, mobile data, memory-card only), Bluetooth trackers, phone stalkerware or audio bugs, and sees nothing at all on networks that hide devices from each other (common in hotels; NattoWok tells you when that's the case). The result always ends with the physical checks worth doing: where to look, the flashlight lens trick, your phone's tracker scan, and what to do if you find something.
 
 ### Keep watching in the background
 
@@ -147,10 +161,10 @@ Hooks receive details as environment variables (`NATTOWOK_EVENT`, `NATTOWOK_MESS
 
 A scan takes about 5–20 seconds on a typical home network:
 
-1. **Find devices.** Every address in your subnet gets a TCP connect on a few common ports. Open *or refused* both prove the host is alive. The system `ping` is used too when available. Meanwhile NattoWok listens for mDNS/Bonjour and UPnP/SSDP announcements.
+1. **Find devices.** Every address in your subnet gets a TCP connect on a few common ports. Open *or refused* both prove the host is alive. The system `ping` is used too when available. Meanwhile NattoWok listens for mDNS/Bonjour and UPnP/SSDP announcements and sends an ONVIF (WS-Discovery) probe, which IP cameras answer.
 2. **Read the neighbor table.** Those probes force the OS to ARP every address, so the ARP table reveals even devices that drop all traffic, along with their MAC addresses.
 3. **Ask for names.** Reverse DNS against your router (which usually knows DHCP names), unicast mDNS, and NetBIOS.
-4. **Check services.** About 40 ports that matter for identification and security, plus banners and web page titles.
+4. **Check services.** About 45 ports that matter for identification and security, plus banners and web page titles.
 5. **Identify.** Clues from the vendor (embedded IEEE registry, ~40k entries), Bonjour services and TXT records (Apple model ids, Google Cast models, printer models), UPnP descriptions, hostnames, ports and banners each add weighted votes, and the winning kind keeps its reasons.
 6. **Advise and remember.** Security rules run, the result is compared with the network's inventory, and changes become timeline events.
 
@@ -161,7 +175,7 @@ Data lives in your OS data folder (`~/.local/share/nattowok`, `~/Library/Applica
 - **Local only.** Phone alerts, if you set them up, send their text to the service you chose. Apart from that, only three features talk to the internet, and only when you run them: the Internet doctor (a few TCP connects and DNS queries to Cloudflare, Google and Quad9, plus Google's standard connectivity check), the speed test (Cloudflare's public speed-test service) and `update-vendors` (downloads the IEEE's public registry). Nothing about your network is sent anywhere, and results stay on your computer.
 - **The dashboard listens on localhost by default.** Every API call needs a random per-run token embedded in the page, which other websites can't read. Requests whose `Host` isn't localhost are refused, which blocks DNS-rebinding attacks. `--listen 0.0.0.0:7878` exposes it on purpose; access then requires a key printed in the terminal.
 - **Phone access is off until you turn it on.** It then listens on this computer's local-network address too, answering only requests addressed to that address and carrying the phone link's own random key (separate from the desktop one). "Make a new link" or `nattowok phone --new-link` replaces the key; turning it off closes that listener. The connection is plain HTTP inside your network, so only use it on networks you trust.
-- **Polite scanning.** NattoWok only connects. It never logs in, never tries passwords, and only follows UPnP description URLs that point back at the device that announced them.
+- **Polite scanning.** NattoWok only connects. It never logs in, never tries passwords, never opens a camera's video, and only follows UPnP description URLs that point back at the device that announced them.
 - **The anonymised export is yours to share or not.** It removes names, notes and tags you added, IP addresses, the unique half of every hardware address (all of it for private addresses), your Wi-Fi name and your public address, and turns personal words in device-announced names into `*`. Nothing is uploaded; read the file before sending it anywhere.
 - **Router exposure is read-only.** NattoWok asks the router for its port-forwarding list; it never adds or removes mappings.
 - Only scan networks you own or are allowed to scan.
@@ -171,6 +185,7 @@ Data lives in your OS data folder (`~/.local/share/nattowok`, `~/Library/Applica
 - IPv4 only for discovery. On networks bigger than /22, the /24 around you is scanned unless you pass `--target`.
 - Identification is a well-reasoned guess. Devices that reveal nothing about themselves stay "Unknown" rather than being labelled wrongly. Give them a name and NattoWok will remember it.
 - Wi-Fi access-point isolation (common on guest networks) hides other devices from any scanner.
+- Room check finds cameras on the network you're on and camera hotspots in range; see [Checking a room](#checking-a-room-for-hidden-cameras) for what it can't see. Nearby network names come from the system's last Wi-Fi scan, and recent macOS versions hide them unless the app has Location access.
 - The speed test stops early once it has moved about 450 MB, enough for an accurate number on most home connections. Multi-gigabit lines still use somewhat more.
 - Wi-Fi details come from `nmcli` (NetworkManager) on Linux, `system_profiler` on macOS and `netsh` on Windows. Recent macOS versions hide the network name unless the app has Location access; signal and channel still work. Windows output is parsed in English.
 
@@ -188,7 +203,8 @@ Layout:
 | Path | What |
 |---|---|
 | `src/scan.rs` | Orchestrates a scan |
-| `src/probe.rs`, `neighbors.rs`, `mdns.rs`, `ssdp.rs`, `netbios.rs`, `dns.rs` | Discovery primitives |
+| `src/probe.rs`, `neighbors.rs`, `mdns.rs`, `ssdp.rs`, `onvif.rs`, `netbios.rs`, `dns.rs` | Discovery primitives |
+| `src/room.rs` | Room check for hidden cameras |
 | `src/identify.rs` | Explainable device identification |
 | `src/security.rs` | Plain-language findings and health score |
 | `src/routers.rs` | Brand-specific router setting locations |

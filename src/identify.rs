@@ -271,6 +271,7 @@ const VENDORS: &[(&str, &[(DeviceKind, u32)])] = &[
     ("valve", &[(GameConsole, 35)]),
     ("microsoft", &[(Computer, 10), (GameConsole, 8)]),
     ("google", &[(Speaker, 12), (Tv, 10), (Phone, 8)]),
+    ("blink", &[(Camera, 45)]),
     ("amazon", &[(Speaker, 15), (Tv, 12), (Tablet, 6)]),
     ("roku", &[(Tv, 45)]),
     ("sonos", &[(Speaker, 50)]),
@@ -301,6 +302,13 @@ const VENDORS: &[(&str, &[(DeviceKind, u32)])] = &[
     ("arlo", &[(Camera, 45)]),
     ("vivotek", &[(Camera, 45)]),
     ("ezviz", &[(Camera, 45)]),
+    ("huacheng", &[(Camera, 40)]),
+    ("lorex", &[(Camera, 45)]),
+    ("swann", &[(Camera, 40)]),
+    ("hankvision", &[(Camera, 40)]),
+    ("reecam", &[(Camera, 40)]),
+    ("goke", &[(Camera, 25)]),
+    ("ingenic", &[(Camera, 20), (SmartHome, 10)]),
     ("espressif", &[(SmartHome, 35)]),
     ("tuya", &[(SmartHome, 40)]),
     ("allterco", &[(SmartHome, 45)]),
@@ -407,6 +415,8 @@ fn port_votes(port: u16) -> &'static [(DeviceKind, u32)] {
         515 => &[(Printer, 35)],
         631 => &[(Printer, 30)],
         554 | 8554 => &[(Camera, 30)],
+        37777 | 34567 => &[(Camera, 45)],
+        6668 => &[(SmartHome, 35)],
         3389 => &[(Computer, 35)],
         135 => &[(Computer, 25)],
         445 | 139 => &[(Computer, 12), (Nas, 10)],
@@ -427,8 +437,14 @@ fn port_votes(port: u16) -> &'static [(DeviceKind, u32)] {
     }
 }
 
+/// Pseudo service names for devices that answered an ONVIF discovery probe.
+pub const ONVIF_VIDEO: &str = "_onvif-video";
+pub const ONVIF: &str = "_onvif";
+
 fn service_votes(service: &str) -> &'static [(DeviceKind, u32)] {
     match service {
+        ONVIF_VIDEO => &[(Camera, 90)],
+        ONVIF => &[(Camera, 40)],
         "_airplay._tcp" => &[(Tv, 25), (Computer, 10), (Speaker, 10)],
         "_raop._tcp" => &[(Speaker, 20), (Tv, 15)],
         "_googlecast._tcp" => &[(Tv, 40), (Speaker, 25)],
@@ -663,6 +679,8 @@ pub fn identify(device: &mut Device, txt: &BTreeMap<String, String>) {
                     | "_sonos._tcp"
                     | "_hap._tcp"
                     | "_spotify-connect._tcp"
+                    | ONVIF_VIDEO
+                    | ONVIF
             )
         })
         .filter_map(|a| a.instance.as_deref().map(tidy_instance))

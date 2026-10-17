@@ -416,3 +416,19 @@ textarea { min-height: 70px; resize: vertical; }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; }
 }
+
+/* Room check */
+.room-device h3 { gap: 10px; }
+.kind-icon.small { width: 30px; height: 30px; border-radius: 8px; }
+.kind-icon.small svg { width: 18px; height: 18px; }
+.reasons { margin: 6px 0 0; padding-left: 20px; font-size: 14px; }
+.reasons li { margin: 3px 0; }
+.check.gone { border-left: 4px solid var(--info); }
+.room-fine { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 16px; margin: 14px 0; }
+.room-fine summary { cursor: pointer; font-weight: 600; }
+.room-fine ul { margin: 8px 0 0; padding-left: 20px; font-size: 14px; }
+.room-fine li { margin: 4px 0; }
+.room-guide { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 10px; margin-top: 18px; }
+.room-guide h4 { margin: 2px 0 6px; }
+.room-guide ul, .room-guide ol { margin: 0; padding-left: 20px; font-size: 14px; }
+.room-guide li { margin: 6px 0; }
