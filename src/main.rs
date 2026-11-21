@@ -77,6 +77,13 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Wi-Fi coverage walk: carry this laptop around and measure room by room
+    Coverage {
+        #[command(subcommand)]
+        action: Option<CoverageAction>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Look for hidden cameras on the Wi-Fi of a rental or hotel room.
     /// Only finds devices: never logs in to them or opens their video.
     /// Not saved to your device list
@@ -310,6 +317,22 @@ impl Paint {
     fn blue(&self, s: &str) -> String {
         self.wrap("34", s)
     }
+}
+
+#[derive(Subcommand)]
+enum CoverageAction {
+    /// Measure Wi-Fi where you are now, e.g. `nattowok coverage here Kitchen`
+    Here {
+        #[arg(required = true, num_args = 1..)]
+        room: Vec<String>,
+    },
+    /// Remove a room's reading
+    Remove {
+        #[arg(required = true, num_args = 1..)]
+        room: Vec<String>,
+    },
+    /// Start a new walk
+    Clear,
 }
 
 #[derive(Subcommand)]
@@ -590,6 +613,41 @@ async fn run(cli: Cli) -> Result<()> {
                     print_outages(&paint, &summary, &label, settings.outage_log);
                 }
             }
+            Ok(())
+        }
+        Command::Coverage { action, json } => {
+            use nattowok::coverage::{self, Survey};
+            let key = workspace.key_for(netinfo::detect(cli.interface.as_deref(), None).ok().as_ref());
+            let dir = workspace.dir(&key);
+            let mut survey = Survey::load(&dir);
+            match action {
+                Some(CoverageAction::Here { room }) => {
+                    let room = room.join(" ");
+                    eprintln!("Measuring Wi-Fi in {room}…");
+                    let spot = coverage::measure(&room, cli.interface.as_deref()).await?;
+                    survey.record(spot);
+                    survey.save(&dir)?;
+                }
+                Some(CoverageAction::Remove { room }) => {
+                    let room = room.join(" ");
+                    if !survey.remove(&room) {
+                        bail!("no reading for \"{room}\"");
+                    }
+                    survey.save(&dir)?;
+                }
+                Some(CoverageAction::Clear) => {
+                    survey = Survey::default();
+                    survey.save(&dir)?;
+                    println!("Cleared. Start next to the router: `nattowok coverage here \"Living room\"`.");
+                    return Ok(());
+                }
+                None => {}
+            }
+            if json {
+                println!("{}", serde_json::to_string_pretty(&survey)?);
+                return Ok(());
+            }
+            print_coverage(&paint, &survey);
             Ok(())
         }
         Command::RoomCheck { json } => {
@@ -1439,4 +1497,45 @@ fn print_outages(paint: &Paint, s: &nattowok::outages::Summary, network: &str, e
         }
     }
     println!("\n  {}", paint.dim("`nattowok outages report -o report.md` makes a report for your internet provider."));
+}
+
+fn print_coverage(paint: &Paint, survey: &nattowok::coverage::Survey) {
+    use nattowok::wifi::Quality;
+    let (headline, advice) = nattowok::coverage::advise(survey);
+    println!("\n  {}\n", paint.bold(&headline));
+    if survey.spots.is_empty() {
+        println!("  Carry this laptop to a room and run `nattowok coverage here Kitchen` (any name).");
+        println!("  Start next to the router, then the rooms where Wi-Fi is a problem.\n");
+        return;
+    }
+    let width = survey.spots.iter().map(|s| s.room.chars().count()).max().unwrap_or(4).max(4);
+    for s in &survey.spots {
+        let n = usize::from(s.strength().unwrap_or(0)) / 5;
+        let bar = format!("{}{}", "█".repeat(n), "·".repeat(20 - n.min(20)));
+        let label = s.quality.map(Quality::label).unwrap_or("?");
+        let bar = match s.quality {
+            Some(Quality::Weak) => paint.red(&bar),
+            Some(Quality::Fair) => paint.yellow(&bar),
+            _ => paint.green(&bar),
+        };
+        let router = match (s.router_ms, s.loss_pct) {
+            (Some(ms), Some(l)) if l > 0.0 => format!("router {ms} ms, {l}% lost"),
+            (Some(ms), _) => format!("router {ms} ms"),
+            _ => String::new(),
+        };
+        let ap = s.bssid.as_deref().map(|b| format!("AP …{}", &b[b.len().saturating_sub(5)..])).unwrap_or_default();
+        let details = [s.band.clone().unwrap_or_default(), router, ap]
+            .into_iter()
+            .filter(|x| !x.is_empty())
+            .collect::<Vec<_>>()
+            .join(" · ");
+        println!("  {:<width$}  {bar}  {:>8}  {:<9}  {}", s.room, s.reading(), label, paint.dim(&details));
+    }
+    if !advice.is_empty() {
+        println!();
+        for a in &advice {
+            println!("  {} {a}", paint.blue("→"));
+        }
+    }
+    println!();
 }

@@ -27,6 +27,7 @@ NattoWok is a network scanner in the spirit of Fing. It's built around a differe
 | Only finding out about a new device when you happen to look | `nattowok service install` keeps NattoWok running in the background (starting at log-in), **scanning on a schedule and sending desktop notifications** for new devices and security issues. No admin rights needed. |
 | "Is that device usually here?" | Every device gets a **week view of when it was online**, with a plain summary ("usually online between 18:00 and 08:00"). Times NattoWok wasn't scanning are shown as such, never as "offline". A **Who's home** panel (and `nattowok home`) uses household phones as a stand-in for people. |
 | "The internet keeps dropping" and the provider says it's fine | Turn on the **outage log** (`nattowok outages on`, or the Internet doctor tab). While NattoWok runs it checks once a minute and records every outage: when, how long, and **where the fault was**: this computer, your Wi-Fi or router, or the provider (the router answered, the internet didn't). A week chart shows them, you're notified when the internet comes back after one, and **Report for your provider** gives a dated table of their outages, with the home-side ones listed separately so it's fair. |
+| "Wi-Fi is bad upstairs", but where exactly, and what would fix it? | A **Wi-Fi coverage walk**: carry your laptop from room to room and press **Measure here** (or `nattowok coverage here Kitchen`). You get every room's signal side by side, plus advice: where a mesh point would actually help (halfway, where the signal is still decent, not in the dead room), when a room's problem is interference rather than distance, when 5 GHz is the reason, and when your laptop is clinging to a far mesh unit. Measure again after moving things to see the difference. |
 | Speed tests that ignore the thing you actually feel | The **speed test** (`nattowok speed`, or the Internet doctor tab) measures download and upload *and how much delay grows while the line is busy*: the "bufferbloat" behind laggy calls when someone streams. It grades it A–F and names the router setting that fixes it (Smart Queue / SQM), with speeds to set. Results are kept, so you can see whether your provider delivers. |
 | "Turn off UPnP in your router"… but where? | NattoWok recognises your router (ASUS, TP-Link, Deco, Netgear, Orbi, eero, Google/Nest, FRITZ!Box, Linksys, UniFi, MikroTik, OpenWrt, D-Link) and every fix comes with **where that setting lives on your model**, plus an "Open router settings" button. Provider-supplied routers get clear general steps. `nattowok router` lists them all. |
 | Cameras and smart plugs on the same network as your laptop | Flags gadgets that rarely get security updates sharing your main network, and walks you through moving them to the router's **guest/IoT network**. |
@@ -84,6 +85,7 @@ nattowok scan --no-ports --json     # quick scan, machine-readable
 nattowok devices                    # everything known on this network, online or not
 nattowok doctor                     # why is the internet slow?
 nattowok speed                      # speed + lag under load; --history for past results
+nattowok coverage here Kitchen      # measure Wi-Fi in this room (then `nattowok coverage` for all rooms)
 nattowok outages on                 # log internet outages (then `nattowok outages` to see them)
 nattowok outages report -o isp.md   # a report to send your internet provider
 nattowok ports "Hallway camera"     # check ~1,100 ports on one device
@@ -193,7 +195,8 @@ Data lives in your OS data folder (`~/.local/share/nattowok`, `~/Library/Applica
 - Wi-Fi access-point isolation (common on guest networks) hides other devices from any scanner.
 - Room check finds cameras on the network you're on and camera hotspots in range; see [Checking a room](#checking-a-room-for-hidden-cameras) for what it can't see. Nearby network names come from the system's last Wi-Fi scan, and recent macOS versions hide them unless the app has Location access.
 - The speed test stops early once it has moved about 450 MB, enough for an accurate number on most home connections. Multi-gigabit lines still use somewhat more.
-- Wi-Fi details come from `nmcli` (NetworkManager) on Linux, `system_profiler` on macOS and `netsh` on Windows. Recent macOS versions hide the network name unless the app has Location access; signal and channel still work. Windows output is parsed in English.
+- The coverage walk measures the computer NattoWok runs on, so it needs a laptop on Wi-Fi; a phone's browser can't read its own signal.
+- Wi-Fi details come from `nmcli` (NetworkManager, plus the kernel's live signal reading) on Linux, `system_profiler` on macOS and `netsh` on Windows. Recent macOS versions hide the network name unless the app has Location access; signal and channel still work. Windows output is parsed in English.
 
 ## Development
 
@@ -219,6 +222,7 @@ Layout:
 | `src/speedtest.rs`, `src/fetch.rs` | Speed and bufferbloat test; small HTTPS client |
 | `src/outages.rs` | Outage log and the report for your provider |
 | `src/reach.rs` | "Why can't I connect to it?" troubleshooting |
+| `src/coverage.rs` | Room-by-room Wi-Fi coverage walk |
 | `src/doctor.rs`, `src/wifi.rs` | Internet doctor, Wi-Fi signal and channel readings |
 | `src/upnp.rs` | Router port-forwarding (exposure) queries |
 | `src/alerts.rs` | Phone alerts (ntfy, Telegram, Discord, webhooks) |

@@ -706,8 +706,49 @@ function outagePanel(d) {
   </div>`;
 }
 
+// ---------- Wi-Fi coverage walk ----------
+
+const ROOM_SUGGESTIONS = ["Living room", "Kitchen", "Bedroom", "Office", "Hallway", "Bathroom", "Upstairs", "Downstairs", "Garden", "Garage"];
+
+function coveragePanel(d) {
+  const c = d.coverage;
+  if (!c) return "";
+  const rooms = c.spots.map((s) => s.room);
+  const options = [...new Set([...rooms, ...ROOM_SUGGESTIONS])].map((r) => `<option value="${esc(r)}">`).join("");
+  const form = `<form class="cov-form" id="cov-form">
+      <input id="cov-room" list="cov-rooms" placeholder="Room name, e.g. Kitchen" aria-label="Room name" value="${esc(state.covRoom || "")}" autocomplete="off">
+      <datalist id="cov-rooms">${options}</datalist>
+      <button class="btn ${c.spots.length ? "" : "primary"}" id="cov-measure" ${state.covBusy ? "disabled" : ""}>${state.covBusy ? "Measuring…" : "Measure here"}</button>
+    </form>`;
+  const head = `<div class="speed-head"><div><h3>Wi-Fi in each room</h3>
+      <p class="hint">Carry this laptop to a room, type its name and press <strong>Measure here</strong> (about 4 seconds). Start next to the router, then the rooms where Wi-Fi is a problem. Measuring a room again replaces its reading, so you can see whether moving the router helped.</p></div></div>`;
+  if (!c.spots.length) return `<div class="panel">${head}${form}</div>`;
+  const rows = c.spots.map((s) => {
+    const q = s.quality || "unknown";
+    const cls = { weak: "bad", fair: "warn", good: "good", excellent: "good" }[q] || "";
+    const details = [s.band, s.router_ms != null ? `router ${s.router_ms} ms${s.loss_pct ? `, ${s.loss_pct}% lost` : ""}` : "", s.bssid ? `access point …${s.bssid.slice(-5)}` : ""].filter(Boolean).join(" · ");
+    const tip = `${s.room}: ${s.reading} (${q})${details ? ` · ${details}` : ""}${s.previous_reading ? ` · before: ${s.previous_reading}` : ""} · measured ${ago(s.at)}`;
+    return `<div class="cov-row">
+      <span class="cov-room">${esc(s.room)}</span>
+      <div class="cov-track" data-tip="${esc(tip)}"><div class="cov-bar ${cls}" style="width:${Math.max(2, s.strength ?? 0)}%"></div></div>
+      <span class="cov-val">${esc(s.reading)} <span class="badge ${cls}">${esc(q)}</span></span>
+      <span class="cov-meta hint">${esc(details)}</span>
+      <button class="btn small ghost" data-cov-remove="${esc(s.room)}" aria-label="Remove ${esc(s.room)}">✕</button>
+    </div>`;
+  }).join("");
+  const advice = c.advice.map((a) => `<p class="advice-box">💡 ${esc(a)}</p>`).join("");
+  return `<div class="panel">${head}${form}
+    <h4 class="cov-headline">${esc(c.headline)}</h4>
+    <div class="cov-list" role="table" aria-label="Wi-Fi signal by room">${rows}</div>
+    <p class="hint">Bars show signal strength: longer is stronger. Good is about -67 dBm or better; weak is below -75 dBm.</p>
+    ${advice}
+  </div>`;
+}
+
 function renderDoctor(d) {
   const el = $("#tab-doctor");
+  // Don't wipe a room name being typed.
+  if (document.activeElement?.id === "cov-room") return;
   const diag = d.diagnosis;
   const running = d.doctor.running;
   const intro = `<div class="banner" style="background:var(--surface-2)">
@@ -715,7 +756,7 @@ function renderDoctor(d) {
       <button class="btn primary" id="doctor-btn" ${running ? "disabled" : ""}>${running ? "Diagnosing…" : diag ? "Run again" : "Diagnose my connection"}</button>
     </div>`;
   if (!diag) {
-    el.innerHTML = intro + (d.doctor.error ? `<p class="badge bad">${esc(d.doctor.error)}</p>` : "") + outagePanel(d) + speedPanel(d);
+    el.innerHTML = intro + (d.doctor.error ? `<p class="badge bad">${esc(d.doctor.error)}</p>` : "") + outagePanel(d) + coveragePanel(d) + speedPanel(d);
     return;
   }
   const byId = Object.fromEntries(diag.checks.map((c) => [c.id, c]));
@@ -748,7 +789,7 @@ function renderDoctor(d) {
     <div class="chain" style="grid-template-columns:repeat(${hops.length},1fr)">${chain}</div>
     ${checks}${dns}
     <p class="note">Checked ${esc(ago(diag.at))}.</p>
-    ${outagePanel(d)}${speedPanel(d)}`;
+    ${outagePanel(d)}${coveragePanel(d)}${speedPanel(d)}`;
 }
 
 // ---------- room check ----------
@@ -1176,7 +1217,7 @@ function setFilter(filter) {
 }
 
 document.addEventListener("click", async (e) => {
-  const t = e.target.closest("[data-device],[data-tab],[data-filter],[data-goto-filter],[data-goto-tab],[data-ignore],[data-unignore],[data-export],#trust-all,#review-start,#doctor-btn,#speed-btn,#room-btn,[data-outage-log],#outage-report");
+  const t = e.target.closest("[data-device],[data-tab],[data-filter],[data-goto-filter],[data-goto-tab],[data-ignore],[data-unignore],[data-export],#trust-all,#review-start,#doctor-btn,#speed-btn,#room-btn,[data-outage-log],#outage-report,[data-cov-remove]");
   if (!e.target.closest(".menu")) {
     $("#export-menu").hidden = true;
     $("#settings-menu").hidden = true;
@@ -1213,6 +1254,7 @@ document.addEventListener("click", async (e) => {
       await api("/api/settings", { method: "PATCH", body: JSON.stringify({ outage_log: t.dataset.outageLog === "on" }) });
       toast(t.dataset.outageLog === "on" ? "Outage log on: checking once a minute" : "Outage log paused");
     }
+    if (t.dataset.covRemove) await api(`/api/coverage/${encodeURIComponent(t.dataset.covRemove)}`, { method: "DELETE" });
     if (t.id === "outage-report") {
       const resp = await api("/api/outages/report?days=30");
       const a = document.createElement("a");
@@ -1224,6 +1266,26 @@ document.addEventListener("click", async (e) => {
     }
     await refresh();
   } catch (err) { toast(err.message); }
+});
+
+document.addEventListener("input", (e) => {
+  if (e.target.id === "cov-room") state.covRoom = e.target.value;
+});
+document.addEventListener("submit", async (e) => {
+  if (e.target.id !== "cov-form") return;
+  e.preventDefault();
+  const room = (state.covRoom || "").trim();
+  if (!room) { toast("Type the room's name first"); $("#cov-room")?.focus(); return; }
+  state.covBusy = true;
+  document.activeElement?.blur();
+  renderDoctor(state.data);
+  try {
+    await api("/api/coverage", { method: "POST", body: JSON.stringify({ room }) });
+    toast(`Measured ${room}. Off to the next room!`);
+    state.covRoom = "";
+  } catch (err) { toast(err.message); }
+  state.covBusy = false;
+  await refresh();
 });
 
 $("#scan-btn").onclick = async () => {

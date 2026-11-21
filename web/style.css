@@ -446,3 +446,23 @@ textarea { min-height: 70px; resize: vertical; }
 .why-head h4 { margin: 0 0 4px; }
 .section.why .verdict { margin: 10px 0 8px; padding: 10px 12px; }
 .section.why .verdict p { margin: 0; font-size: 14px; }
+
+/* Wi-Fi coverage walk */
+.cov-form { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0; }
+.cov-form input { flex: 1 1 200px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); font: inherit; }
+.cov-headline { margin: 14px 0 8px; font-size: 15px; }
+.cov-list { display: grid; gap: 6px; margin-bottom: 8px; }
+.cov-row { display: grid; grid-template-columns: 140px minmax(80px, 1fr) 11em minmax(0, 1.2fr) 34px; gap: 10px; align-items: center; font-size: 14px; }
+.cov-room { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cov-track { height: 10px; border-radius: 4px; background: var(--surface-2); }
+.cov-bar { height: 100%; border-radius: 4px; background: var(--muted); }
+.cov-bar.good { background: var(--good); }
+.cov-bar.warn { background: var(--warn); }
+.cov-bar.bad { background: var(--bad); }
+.cov-val { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.cov-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+@media (max-width: 640px) {
+  .cov-row { grid-template-columns: 1fr auto auto; }
+  .cov-track { grid-column: 1 / -1; grid-row: 2; }
+  .cov-meta { grid-column: 1 / -1; grid-row: 3; white-space: normal; }
+}

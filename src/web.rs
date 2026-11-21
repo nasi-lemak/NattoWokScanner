@@ -412,6 +412,7 @@ async fn state_json(State(state): State<Shared>) -> Json<serde_json::Value> {
         "room_check": *state.room_check.lock().unwrap(),
         "room_guide": crate::room::guide(),
         "outages": outage_view(&state, &cur.key, Some(7)),
+        "coverage": coverage_view(&state, &cur.key),
     }))
 }
 
@@ -783,6 +784,49 @@ async fn deep_scan(State(state): State<Shared>, Path(id): Path<String>) -> ApiRe
     Ok(Json(described))
 }
 
+fn coverage_view(state: &AppState, key: &str) -> serde_json::Value {
+    let survey = crate::coverage::Survey::load(&state.workspace.dir(key));
+    let (headline, advice) = crate::coverage::advise(&survey);
+    let spots: Vec<_> = survey
+        .spots
+        .iter()
+        .map(|s| {
+            let mut v = serde_json::to_value(s).unwrap_or_default();
+            v["strength"] = json!(s.strength());
+            v["reading"] = json!(s.reading());
+            v["previous_reading"] = json!(s.previous.as_ref().map(|p| p.reading()));
+            v
+        })
+        .collect();
+    json!({ "spots": spots, "headline": headline, "advice": advice })
+}
+
+#[derive(Deserialize)]
+struct RoomName {
+    room: String,
+}
+
+async fn measure_coverage(State(state): State<Shared>, Json(body): Json<RoomName>) -> ApiResult<StatusCode> {
+    let spot = crate::coverage::measure(&body.room, state.scan_opts.interface.as_deref())
+        .await
+        .map_err(|e| ApiError(StatusCode::BAD_REQUEST, format!("{e:#}")))?;
+    let dir = state.workspace.dir(&current(&state).key);
+    let mut survey = crate::coverage::Survey::load(&dir);
+    survey.record(spot);
+    survey.save(&dir)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn remove_coverage(State(state): State<Shared>, Path(room): Path<String>) -> ApiResult<StatusCode> {
+    let dir = state.workspace.dir(&current(&state).key);
+    let mut survey = crate::coverage::Survey::load(&dir);
+    if !survey.remove(&room) {
+        return Err(not_found("room"));
+    }
+    survey.save(&dir)?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
 /// "Why can't I print or cast to it?"
 async fn why_device(State(state): State<Shared>, Path(id): Path<String>) -> ApiResult<Json<crate::reach::Help>> {
     let (device, inv) = {
@@ -893,6 +937,8 @@ pub fn router(state: Shared, access: Access) -> Router {
         .route("/api/speedtest", post(start_speedtest_route))
         .route("/api/room-check", post(start_room_check))
         .route("/api/outages", get(outages))
+        .route("/api/coverage", post(measure_coverage))
+        .route("/api/coverage/{room}", axum::routing::delete(remove_coverage))
         .route("/api/outages/report", get(outage_report))
         .route("/api/trust-all", post(trust_all))
         .route("/api/devices/{id}", patch(update_device).delete(forget_device))

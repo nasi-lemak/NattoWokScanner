@@ -31,6 +31,10 @@ pub struct WifiInfo {
     pub rate_mbps: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub security: Option<String>,
+    /// The access point (radio) this computer is connected to; on mesh
+    /// systems, which unit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bssid: Option<String>,
     /// Other networks within range.
     #[serde(default)]
     pub neighbors: Vec<Neighbor>,
@@ -167,10 +171,26 @@ pub async fn read() -> Option<WifiInfo> {
         }
         Some(info)
     } else {
-        let fields = "ACTIVE,SSID,SIGNAL,CHAN,FREQ,RATE,SECURITY";
-        parse_nmcli(&output("nmcli", &["-t", "-f", fields, "device", "wifi", "list", "--rescan", "no"]).await?)
+        let fields = "ACTIVE,SSID,SIGNAL,CHAN,FREQ,RATE,SECURITY,BSSID";
+        let mut info =
+            parse_nmcli(&output("nmcli", &["-t", "-f", fields, "device", "wifi", "list", "--rescan", "no"]).await?);
+        // nmcli's signal comes from the last scan; the kernel's is live.
+        if let (Some(i), Ok(text)) = (info.as_mut(), tokio::fs::read_to_string("/proc/net/wireless").await) {
+            i.rssi_dbm = parse_proc_wireless(&text).or(i.rssi_dbm);
+        }
+        info
     };
     info.filter(WifiInfo::connected)
+}
+
+/// Signal level in dBm from `/proc/net/wireless` (first wireless interface).
+pub fn parse_proc_wireless(text: &str) -> Option<i32> {
+    text.lines().skip(2).find_map(|line| {
+        let (_, rest) = line.split_once(':')?;
+        let level: f64 = rest.split_whitespace().nth(2)?.trim_end_matches('.').parse().ok()?;
+        // Drivers without dBm report 0 or a positive "quality" here.
+        (level < 0.0 && level > -110.0).then_some(level.round() as i32)
+    })
 }
 
 /// Splits nmcli's terse output, where `:` separates fields and `\:` is a literal colon.
@@ -219,6 +239,7 @@ pub fn parse_nmcli(text: &str) -> Option<WifiInfo> {
                     .map(str::to_string),
                 rate_mbps: leading_number(&f[5]),
                 security: Some(f[6].clone()),
+                bssid: f.get(7).filter(|b| !b.is_empty()).map(|b| b.to_ascii_uppercase()),
                 neighbors: Vec::new(),
             });
         } else if let Some(channel) = channel {
@@ -299,6 +320,7 @@ pub fn parse_system_profiler(json: &str) -> Option<WifiInfo> {
                     .and_then(|r| r.as_u64().or_else(|| r.as_str().and_then(leading_number).map(u64::from)))
                     .and_then(|r| u32::try_from(r).ok()),
                 security,
+                bssid: None,
                 neighbors,
             });
         }
@@ -329,6 +351,8 @@ pub fn parse_netsh_interfaces(text: &str) -> Option<WifiInfo> {
             info.security = Some(v.to_string());
         } else if let Some(v) = netsh_value(line, "Band") {
             info.band = Some(v.to_string());
+        } else if let Some(v) = netsh_value(line, "BSSID") {
+            info.bssid = Some(v.to_ascii_uppercase()).filter(|b| !b.is_empty());
         }
     }
     if info.band.is_none() {
@@ -364,7 +388,7 @@ mod tests {
 
     #[test]
     fn parses_nmcli() {
-        let text = "yes:Home\\:Net:42:6:2437 MHz:130 Mbit/s:WPA2\n\
+        let text = "yes:Home\\:Net:42:6:2437 MHz:130 Mbit/s:WPA2:AA\\:BB\\:CC\\:00\\:11\\:22\n\
                     no:Home\\:Net:30:1:2412 MHz:130 Mbit/s:WPA2\n\
                     no:Neighbour:70:6:2437 MHz:54 Mbit/s:WPA2\n\
                     no:Other:50:4:2427 MHz:54 Mbit/s:WPA1\n\
@@ -376,6 +400,7 @@ mod tests {
         assert_eq!(w.channel, Some(6));
         assert_eq!(w.band.as_deref(), Some("2.4 GHz"));
         assert_eq!(w.rate_mbps, Some(130));
+        assert_eq!(w.bssid.as_deref(), Some("AA:BB:CC:00:11:22"));
         assert_eq!(w.quality(), Some(Quality::Fair));
         assert_eq!(w.neighbors.len(), 5);
         // Neighbour (6) and Other (4) overlap; our own AP on 1 doesn't count; 11 and 5 GHz don't overlap.
@@ -412,6 +437,7 @@ mod tests {
         assert_eq!(w.ssid.as_deref(), Some("Cafe"));
         assert_eq!(w.channel, Some(11));
         assert_eq!(w.signal_percent, Some(35));
+        assert_eq!(w.bssid.as_deref(), Some("AA:BB:CC:DD:EE:FF"));
         assert_eq!(w.quality(), Some(Quality::Weak));
         assert_eq!(w.security_risk(), Some(SecurityRisk::Open));
         assert!(parse_netsh_interfaces("    State                  : disconnected\n").is_none());
@@ -425,6 +451,15 @@ mod tests {
                 Neighbor { ssid: Some("Shop".into()), channel: 9, signal_percent: Some(60) },
             ]
         );
+    }
+
+    #[test]
+    fn reads_live_signal() {
+        let text = "Inter-| sta-|   Quality        |   Discarded packets               | Missed | WE\n \
+                    face | tus | link level noise |  nwid  crypt   frag  retry   misc | beacon | 22\n \
+                    wlan0: 0000   54.  -56.  -256        0      0      0      0     36        0\n";
+        assert_eq!(parse_proc_wireless(text), Some(-56));
+        assert_eq!(parse_proc_wireless("a\nb\n"), None);
     }
 
     #[test]
