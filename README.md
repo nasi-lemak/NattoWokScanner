@@ -70,7 +70,17 @@ scripts/build-release.sh                                   # for this computer's
 CC_x86_64_unknown_linux_musl=clang scripts/build-release.sh x86_64-unknown-linux-musl   # static Linux build
 ```
 
-`cargo install --path . --no-default-features` builds without the two features that use HTTPS (speed test and vendor updates), if you want nothing internet-facing at all.
+For Debian, Ubuntu, Linux Mint, Raspberry Pi OS and other Debian-based systems there's a proper package, with an **app-menu entry** ("NattoWok Scanner") that opens the dashboard:
+
+```sh
+rustup target add x86_64-unknown-linux-musl
+scripts/build-deb.sh                      # dist/nattowok_<version>_amd64.deb (static, any Debian-based distribution)
+sudo apt install ./dist/nattowok_*_amd64.deb
+```
+
+`sudo apt remove nattowok` uninstalls it (your data folder is left alone). For 64-bit ARM pass `aarch64-unknown-linux-musl`, which needs a C compiler for that target.
+
+`cargo install --path . --no-default-features` builds without the features that use HTTPS (speed test, and vendor and flaw-list updates), if you want nothing internet-facing at all.
 
 ## Use
 
@@ -236,6 +246,7 @@ Layout:
 | `src/notify.rs`, `src/service.rs`, `src/settings.rs` | Desktop notifications, background service, preferences |
 | `src/web.rs`, `web/` | Dashboard server and UI (embedded at compile time) |
 | `src/main.rs` | CLI |
+| `scripts/`, `packaging/` | Checks, release archives and the Debian package |
 
 The built-in vendor table in `data/oui.tsv.gz` is generated from the IEEE MA-L registry (people can also refresh theirs with `nattowok update-vendors`, which stores the new list in the data folder):
 

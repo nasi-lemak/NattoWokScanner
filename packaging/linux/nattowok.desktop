@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=NattoWok Scanner
+GenericName=Network Scanner
+Comment=See what's on your network, check its security, and find out why the internet is slow
+Exec=nattowok ui
+Icon=nattowok
+Terminal=false
+Categories=Network;Monitor;Utility;
+Keywords=network;scanner;wifi;security;devices;router;speed;
+StartupNotify=false
