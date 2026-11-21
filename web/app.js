@@ -603,7 +603,7 @@ function speedPanel(d) {
   const head = `<div class="speed-head"><div><h3>Speed and lag under load</h3>
     <p class="hint">Measures download and upload speed, and how much delay grows while the line is busy (the reason calls stutter while someone streams). Uses Cloudflare's speed test: about 15 seconds and up to ~450 MB of data.</p></div>${button}</div>`;
   if (job.error && !job.running) return `<div class="panel">${head}<p class="badge bad">${esc(job.error)}</p></div>`;
-  if (!last) return `<div class="panel">${head}</div>`;
+  if (!last) return `<div class="panel">${head}${planSection(d)}</div>`;
   const busyMs = Math.max(last.loaded_down_ms, last.loaded_up_ms);
   const gradeClass = { A: "good", B: "good", C: "warn", D: "bad", F: "bad" }[last.grade];
   const tiles = `<div class="speed-tiles">
@@ -620,6 +620,43 @@ function speedPanel(d) {
     ${["C", "D", "F"].includes(last.grade) ? routerHelp("sqm") : ""}
     <p class="hint">Tested ${esc(ago(last.at))} · used ${Math.round(last.data_used_mb)} MB${last.location ? ` · Cloudflare ${esc(last.location)}` : ""}</p>
     ${older ? `<table class="dns-table"><thead><tr><th>Earlier</th><th>↓ Mbps</th><th>↑ Mbps</th><th>Busy delay</th><th>Grade</th></tr></thead><tbody>${older}</tbody></table>` : ""}
+    ${planSection(d)}
+  </div>`;
+}
+
+// "Are you getting what you pay for?"
+function planSection(d) {
+  const s = d.settings || {};
+  const p = d.plan;
+  const n = s.speed_tests_per_day || 0;
+  const form = `<form class="plan-form" id="plan-form">
+      <label>Your plan <input id="plan-down" type="number" min="1" step="any" inputmode="decimal" placeholder="500" value="${s.plan_down_mbps ?? ""}" aria-label="Plan download speed"> Mbps down</label>
+      <label>/ <input id="plan-up" type="number" min="0" step="any" inputmode="decimal" placeholder="optional" value="${s.plan_up_mbps ?? ""}" aria-label="Plan upload speed"> up</label>
+      <button class="btn small">${p ? "Update" : "Compare"}</button>
+    </form>`;
+  const schedule = `<label class="plan-sched">Test automatically
+      <select id="plan-schedule" aria-label="Scheduled speed tests">
+        ${[[0, "Off"], [1, "Once a day"], [2, "Twice a day"], [4, "4 times a day"]].map(([v, l]) => `<option value="${v}" ${v === n ? "selected" : ""}>${l}</option>`).join("")}
+      </select></label>
+    <p class="hint">${n && !s.speed_tests_here ? "Scheduled tests were set up on another network, so they don't run on this one. Choose again to run them here." : "At different times of day, only on this network and only while NattoWok runs. Each test uses up to ~450 MB, so leave this off on capped plans."}</p>`;
+  if (!p) {
+    return `<div class="plan"><h4>Are you getting what you pay for?</h4>
+      <p class="hint">Enter the speed your plan promises and NattoWok compares every test with it, by time of day.</p>${form}</div>`;
+  }
+  const rows = p.windows.map((w) => {
+    const cls = w.down_pct >= 80 ? "good" : w.down_pct >= 50 ? "warn" : "bad";
+    const tip = `${w.label}: ${w.median_down} Mbps down${w.up_pct != null ? `, ${w.median_up} Mbps up (${w.up_pct}%)` : ""} · median of ${w.tests} test${w.tests === 1 ? "" : "s"}`;
+    return `<div class="plan-row">
+      <span>${esc(w.label)}</span>
+      <div class="cov-track plan-track" data-tip="${esc(tip)}"><div class="cov-bar ${cls}" style="width:${Math.max(2, Math.min(100, w.down_pct))}%"></div></div>
+      <span class="cov-val"><strong>${w.down_pct}%</strong> <span class="hint">${w.median_down} Mbps</span></span>
+      <span class="hint">${w.tests} test${w.tests === 1 ? "" : "s"}</span>
+    </div>`;
+  }).join("");
+  return `<div class="plan"><h4>${esc(p.headline)}</h4>
+    ${rows ? `<div class="plan-rows" role="table" aria-label="Download speed as a share of your plan, by time of day">${rows}</div><p class="hint">Median download as a share of your plan's ${p.plan_down} Mbps, last ${p.days} days. The full bar is 100%.</p>` : ""}
+    ${p.notes.map((x) => `<p class="advice-box">💡 ${esc(x)}</p>`).join("")}
+    ${form}${schedule}
   </div>`;
 }
 
@@ -747,8 +784,9 @@ function coveragePanel(d) {
 
 function renderDoctor(d) {
   const el = $("#tab-doctor");
-  // Don't wipe a room name being typed.
-  if (document.activeElement?.id === "cov-room") return;
+  // Don't wipe what's being typed (room names, plan speeds).
+  const a = document.activeElement;
+  if (a && el.contains(a) && (a.tagName === "INPUT" || a.tagName === "SELECT")) return;
   const diag = d.diagnosis;
   const running = d.doctor.running;
   const intro = `<div class="banner" style="background:var(--surface-2)">
@@ -1268,10 +1306,28 @@ document.addEventListener("click", async (e) => {
   } catch (err) { toast(err.message); }
 });
 
+document.addEventListener("change", (e) => {
+  if (e.target.id === "plan-schedule") {
+    const n = Number(e.target.value);
+    e.target.blur();
+    saveSettings({ speed_tests_per_day: n }).then(() =>
+      toast(n ? "Scheduled speed tests on for this network" : "Scheduled speed tests off"));
+  }
+});
 document.addEventListener("input", (e) => {
   if (e.target.id === "cov-room") state.covRoom = e.target.value;
 });
 document.addEventListener("submit", async (e) => {
+  if (e.target.id === "plan-form") {
+    e.preventDefault();
+    const down = Number($("#plan-down").value);
+    const up = Number($("#plan-up").value || 0);
+    if (!(down > 0)) { toast("Enter your plan's download speed in Mbps"); return; }
+    document.activeElement?.blur();
+    await saveSettings({ plan_down_mbps: down, plan_up_mbps: up });
+    toast("Plan saved");
+    return;
+  }
   if (e.target.id !== "cov-form") return;
   e.preventDefault();
   const room = (state.covRoom || "").trim();

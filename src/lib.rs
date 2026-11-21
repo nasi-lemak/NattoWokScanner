@@ -19,6 +19,8 @@ pub mod notify;
 pub mod onvif;
 pub mod oui;
 pub mod outages;
+#[cfg(feature = "tls")]
+pub mod plan;
 pub mod probe;
 pub mod reach;
 pub mod report;

@@ -19,6 +19,16 @@ pub struct Settings {
     pub alerts: Vec<crate::alerts::AlertTarget>,
     /// Check the internet connection once a minute and log outages.
     pub outage_log: bool,
+    /// The internet plan's advertised speeds, to compare test results with.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan_down_mbps: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan_up_mbps: Option<f64>,
+    /// Scheduled speed tests per day (0, 1, 2 or 4), only on the network
+    /// they were turned on for, so a phone hotspot isn't used up.
+    pub speed_tests_per_day: u8,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speed_test_network: Option<String>,
     /// Let devices on the local network open the dashboard with `phone_key`.
     pub phone_access: bool,
     #[serde(skip_serializing_if = "Option::is_none")]

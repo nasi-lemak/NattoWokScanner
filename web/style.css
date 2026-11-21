@@ -466,3 +466,17 @@ textarea { min-height: 70px; resize: vertical; }
   .cov-track { grid-column: 1 / -1; grid-row: 2; }
   .cov-meta { grid-column: 1 / -1; grid-row: 3; white-space: normal; }
 }
+
+/* Plan comparison */
+.plan { border-top: 1px solid var(--border); margin-top: 14px; padding-top: 12px; }
+.plan h4 { margin: 0 0 8px; font-size: 15px; }
+.plan-rows { display: grid; gap: 6px; margin-bottom: 6px; }
+.plan-row { display: grid; grid-template-columns: 150px minmax(80px, 1fr) 10em 5em; gap: 10px; align-items: center; font-size: 14px; }
+.plan-form { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 10px 0 6px; font-size: 14px; }
+.plan-form input { width: 7em; padding: 6px 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text); font: inherit; }
+.plan-sched { display: flex; gap: 8px; align-items: center; font-size: 14px; margin-top: 4px; }
+@media (max-width: 640px) {
+  .plan-row { grid-template-columns: 1fr auto; }
+  .plan-row .plan-track { grid-column: 1 / -1; grid-row: 2; }
+  .plan-row > .hint:last-child { display: none; }
+}

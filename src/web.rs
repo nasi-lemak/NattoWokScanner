@@ -390,6 +390,10 @@ async fn state_json(State(state): State<Shared>) -> Json<serde_json::Value> {
         "auto_scan_minutes": settings.auto_scan_minutes,
         "notifications": settings.notifications,
         "outage_log": settings.outage_log,
+        "plan_down_mbps": settings.plan_down_mbps,
+        "plan_up_mbps": settings.plan_up_mbps,
+        "speed_tests_per_day": settings.speed_tests_per_day,
+        "speed_tests_here": settings.speed_test_network.as_deref() == Some(cur.key.as_str()),
         "alerts": settings.alerts.iter().map(|a| a.describe()).collect::<Vec<_>>(),
     });
     Json(json!({
@@ -413,6 +417,7 @@ async fn state_json(State(state): State<Shared>) -> Json<serde_json::Value> {
         "room_guide": crate::room::guide(),
         "outages": outage_view(&state, &cur.key, Some(7)),
         "coverage": coverage_view(&state, &cur.key),
+        "plan": plan_view(&state, &cur.key, &settings),
     }))
 }
 
@@ -507,9 +512,14 @@ struct SettingsUpdate {
     auto_scan_minutes: Option<u32>,
     notifications: Option<bool>,
     outage_log: Option<bool>,
+    plan_down_mbps: Option<f64>,
+    plan_up_mbps: Option<f64>,
+    speed_tests_per_day: Option<u8>,
 }
 
 async fn update_settings(State(state): State<Shared>, Json(update): Json<SettingsUpdate>) -> ApiResult<StatusCode> {
+    // Taken before the settings lock: elsewhere `current` is locked first.
+    let key = current(&state).key.clone();
     let mut s = settings(&state);
     if let Some(m) = update.auto_scan_minutes {
         s.auto_scan_minutes = m.min(24 * 60);
@@ -519,6 +529,17 @@ async fn update_settings(State(state): State<Shared>, Json(update): Json<Setting
     }
     if let Some(o) = update.outage_log {
         s.outage_log = o;
+    }
+    // 0 clears the plan.
+    if let Some(d) = update.plan_down_mbps {
+        s.plan_down_mbps = (d > 0.0).then_some(d);
+    }
+    if let Some(u) = update.plan_up_mbps {
+        s.plan_up_mbps = (u > 0.0).then_some(u);
+    }
+    if let Some(n) = update.speed_tests_per_day {
+        s.speed_tests_per_day = n.min(4);
+        s.speed_test_network = (n > 0).then_some(key);
     }
     s.save(state.workspace.root())?;
     // Never echo settings back: they hold alert tokens and the phone key.
@@ -700,17 +721,71 @@ fn speed_history(_: &AppState) -> Vec<()> {
 }
 
 #[cfg(feature = "tls")]
-async fn start_speedtest(State(state): State<Shared>) -> ApiResult<StatusCode> {
+fn spawn_speedtest(state: Shared, scheduled: bool) -> ApiResult<()> {
     begin(&state.speed)?;
     tokio::spawn(async move {
         let result = speedtest::run(&speedtest::SpeedOptions::default(), progress_into(state.speed.clone())).await;
         let error = match result {
-            Ok(r) => speedtest::save_result(state.workspace.root(), &r).err().map(|e| format!("{e:#}")),
+            Ok(mut r) => {
+                r.scheduled = scheduled;
+                r.network = Some(current(&state).key.clone());
+                speedtest::save_result(state.workspace.root(), &r).err().map(|e| format!("{e:#}"))
+            }
+            // A failed scheduled test isn't worth a message on screen.
+            Err(_) if scheduled => None,
             Err(e) => Some(format!("Speed test failed: {e:#}")),
         };
         finish(&state.speed, error);
     });
+    Ok(())
+}
+
+#[cfg(feature = "tls")]
+async fn start_speedtest(State(state): State<Shared>) -> ApiResult<StatusCode> {
+    spawn_speedtest(state, false)?;
     Ok(StatusCode::ACCEPTED)
+}
+
+/// Speed results from this network (older ones didn't record it).
+#[cfg(feature = "tls")]
+fn speed_results_here(state: &AppState, key: &str) -> Vec<speedtest::SpeedResult> {
+    speedtest::load_history(state.workspace.root())
+        .into_iter()
+        .filter(|r| r.network.as_deref().is_none_or(|n| n == key))
+        .collect()
+}
+
+/// Runs scheduled speed tests, spread over the day, on the network they
+/// were turned on for.
+#[cfg(feature = "tls")]
+async fn speed_schedule_loop(state: Shared) {
+    loop {
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        let s = settings(&state).clone();
+        if s.speed_tests_per_day == 0 {
+            continue;
+        }
+        let key = current(&state).key.clone();
+        if s.speed_test_network.as_deref() != Some(key.as_str()) || state.outage_live.lock().unwrap().down.is_some() {
+            continue;
+        }
+        if crate::plan::due(Utc::now(), s.speed_tests_per_day, &speed_results_here(&state, &key)) {
+            let _ = spawn_speedtest(state.clone(), true);
+        }
+    }
+}
+
+#[cfg(feature = "tls")]
+fn plan_view(state: &AppState, key: &str, s: &Settings) -> serde_json::Value {
+    let Some(down) = s.plan_down_mbps else { return serde_json::Value::Null };
+    let history = speed_results_here(state, key);
+    let refs: Vec<&speedtest::SpeedResult> = history.iter().collect();
+    json!(crate::plan::compare(&refs, down, s.plan_up_mbps, 30, Utc::now()))
+}
+
+#[cfg(not(feature = "tls"))]
+fn plan_view(_: &AppState, _: &str, _: &Settings) -> serde_json::Value {
+    serde_json::Value::Null
 }
 
 async fn start_speedtest_route(State(state): State<Shared>) -> ApiResult<StatusCode> {
@@ -1041,6 +1116,8 @@ pub async fn serve(opts: ServeOptions) -> Result<()> {
     }
     tokio::spawn(auto_scan_loop(state.clone()));
     spawn_outage_monitor(state.clone());
+    #[cfg(feature = "tls")]
+    tokio::spawn(speed_schedule_loop(state.clone()));
     axum::serve(listener, router(state, Access::Local))
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;

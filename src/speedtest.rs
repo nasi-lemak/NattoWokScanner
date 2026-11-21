@@ -64,6 +64,15 @@ pub struct SpeedResult {
     pub verdict: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub advice: Option<String>,
+    /// Run on a schedule rather than by hand.
+    #[serde(default)]
+    pub scheduled: bool,
+    /// Whether this computer was on Wi-Fi (which can limit the result).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub wifi: Option<bool>,
+    /// The network it ran on (see `Workspace::key_for`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub network: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -367,6 +376,9 @@ pub async fn run(opts: &SpeedOptions, progress: Progress) -> Result<SpeedResult>
         data_used_mb: round1((down.bytes + up.bytes) as f64 / 1_000_000.0),
         verdict,
         advice,
+        scheduled: false,
+        wifi: crate::netinfo::detect(None, None).ok().map(|i| i.wireless),
+        network: None,
     })
 }
 
@@ -381,7 +393,8 @@ pub fn load_history(root: &std::path::Path) -> Vec<SpeedResult> {
 pub fn save_result(root: &std::path::Path, result: &SpeedResult) -> Result<()> {
     let mut history = load_history(root);
     history.push(result.clone());
-    let excess = history.len().saturating_sub(100);
+    // Enough for a month of scheduled tests.
+    let excess = history.len().saturating_sub(400);
     history.drain(..excess);
     std::fs::create_dir_all(root)?;
     std::fs::write(root.join("speedtests.json"), serde_json::to_vec_pretty(&history)?)?;

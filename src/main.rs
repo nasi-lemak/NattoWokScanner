@@ -100,6 +100,20 @@ enum Command {
         #[arg(long)]
         history: bool,
     },
+    /// Are you getting what you pay for? Set your plan (`nattowok plan 500/50`),
+    /// optionally schedule tests, then run `nattowok plan` to compare
+    Plan {
+        /// Your plan's speed in Mbps: download, or download/upload (e.g. 500/50); `off` forgets it
+        speed: Option<String>,
+        /// Speed tests per day while NattoWok runs (0, 1, 2 or 4), on this network only. Each uses up to ~450 MB
+        #[arg(long, value_parser = clap::builder::PossibleValuesParser::new(["0", "1", "2", "4"]))]
+        schedule: Option<String>,
+        /// How many days of results to compare
+        #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(i64).range(1..=90))]
+        days: i64,
+        #[arg(long)]
+        json: bool,
+    },
     /// Check ~1,100 ports on one device
     Ports {
         /// Device name, IP or MAC
@@ -477,6 +491,107 @@ async fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         #[cfg(not(feature = "tls"))]
+        Command::Plan { .. } => bail!("this build of NattoWok has no speed test (built without the `tls` feature)"),
+        #[cfg(feature = "tls")]
+        Command::Plan { speed, schedule, days, json } => {
+            use nattowok::{plan, speedtest};
+            let mut settings = nattowok::settings::Settings::load(&data_dir);
+            let key = workspace.key_for(netinfo::detect(cli.interface.as_deref(), None).ok().as_ref());
+            if let Some(speed) = &speed {
+                if speed.eq_ignore_ascii_case("off") {
+                    settings.plan_down_mbps = None;
+                    settings.plan_up_mbps = None;
+                } else {
+                    let (down, up) = plan::parse_plan(speed)
+                        .context("give your plan's speed in Mbps, like 500 or 500/50 (download/upload)")?;
+                    settings.plan_down_mbps = Some(down);
+                    settings.plan_up_mbps = up;
+                }
+            }
+            if let Some(n) = &schedule {
+                let n: u8 = n.parse()?;
+                settings.speed_tests_per_day = n;
+                settings.speed_test_network = (n > 0).then(|| key.clone());
+                if n > 0 {
+                    println!(
+                        "Speed tests will run {} a day, at varying times, while NattoWok runs on this network (up to ~{} MB a day).",
+                        match n {
+                            1 => "once".to_string(),
+                            2 => "twice".to_string(),
+                            n => format!("{n} times"),
+                        },
+                        450 * u32::from(n)
+                    );
+                    println!(
+                        "{}",
+                        paint.dim(
+                            "They need NattoWok running: `nattowok service install` keeps it going in the background."
+                        )
+                    );
+                } else {
+                    println!("Scheduled speed tests are off.");
+                }
+            }
+            if speed.is_some() || schedule.is_some() {
+                settings.save(&data_dir)?;
+            }
+            let Some(down) = settings.plan_down_mbps else {
+                println!(
+                    "Tell NattoWok your plan's speed first, e.g. `nattowok plan 500/50` (download/upload in Mbps)."
+                );
+                return Ok(());
+            };
+            let history: Vec<speedtest::SpeedResult> = speedtest::load_history(&data_dir)
+                .into_iter()
+                .filter(|r| r.network.as_deref().is_none_or(|n| n == key))
+                .collect();
+            let refs: Vec<&speedtest::SpeedResult> = history.iter().collect();
+            let c = plan::compare(&refs, down, settings.plan_up_mbps, days, chrono::Utc::now());
+            if json {
+                println!("{}", serde_json::to_string_pretty(&c)?);
+                return Ok(());
+            }
+            let plan_text = match c.plan_up {
+                Some(up) => format!("{down}/{up} Mbps"),
+                None => format!("{down} Mbps"),
+            };
+            println!("\n  {} {}", paint.bold(&c.headline), paint.dim(&format!("(plan {plan_text}, last {days} days)")));
+            if !c.windows.is_empty() {
+                println!();
+                for w in &c.windows {
+                    let n = (w.down_pct.min(100.0) / 5.0).round() as usize;
+                    let bar = format!("{}{}", "█".repeat(n), "·".repeat(20 - n));
+                    let bar = if w.down_pct >= 80.0 {
+                        paint.green(&bar)
+                    } else if w.down_pct >= 50.0 {
+                        paint.yellow(&bar)
+                    } else {
+                        paint.red(&bar)
+                    };
+                    let up = w.up_pct.map(|p| format!(" · up {} Mbps ({p}%)", w.median_up)).unwrap_or_default();
+                    println!(
+                        "  {:<20} {bar} {:>4}%  {}",
+                        w.label,
+                        w.down_pct,
+                        paint.dim(&format!(
+                            "down {} Mbps{up} · {} test{}",
+                            w.median_down,
+                            w.tests,
+                            if w.tests == 1 { "" } else { "s" }
+                        ))
+                    );
+                }
+            }
+            for n in &c.notes {
+                println!("\n  {} {n}", paint.blue("→"));
+            }
+            if settings.speed_tests_per_day == 0 {
+                println!("\n  {}", paint.dim("Test at different times of day with `nattowok speed`, or let NattoWok do it: `nattowok plan --schedule 2`."));
+            }
+            println!();
+            Ok(())
+        }
+        #[cfg(not(feature = "tls"))]
         Command::Speed { .. } => bail!("this build of NattoWok has no speed test (built without the `tls` feature)"),
         #[cfg(feature = "tls")]
         Command::Speed { json, history } => {
@@ -506,7 +621,8 @@ async fn run(cli: Cli) -> Result<()> {
                     "Testing with Cloudflare's speed test. This takes about 15 seconds and uses up to about 450 MB of data (more on multi-gigabit lines)."
                 );
             }
-            let r = speedtest::run(&speedtest::SpeedOptions::default(), terminal_progress()).await?;
+            let mut r = speedtest::run(&speedtest::SpeedOptions::default(), terminal_progress()).await?;
+            r.network = Some(workspace.key_for(netinfo::detect(cli.interface.as_deref(), None).ok().as_ref()));
             speedtest::save_result(&data_dir, &r)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&r)?);
