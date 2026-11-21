@@ -94,6 +94,8 @@ pub struct AppState {
     speed: Arc<Mutex<Job>>,
     room: Arc<Mutex<Job>>,
     room_check: Mutex<Option<RoomCheck>>,
+    /// What the outage monitor saw last.
+    outage_live: Mutex<crate::outages::Live>,
     scan_opts: ScanOptions,
     settings: Mutex<SettingsCell>,
     /// The extra listener on the local network for phones, when on.
@@ -387,6 +389,7 @@ async fn state_json(State(state): State<Shared>) -> Json<serde_json::Value> {
     let settings_view = json!({
         "auto_scan_minutes": settings.auto_scan_minutes,
         "notifications": settings.notifications,
+        "outage_log": settings.outage_log,
         "alerts": settings.alerts.iter().map(|a| a.describe()).collect::<Vec<_>>(),
     });
     Json(json!({
@@ -408,6 +411,7 @@ async fn state_json(State(state): State<Shared>) -> Json<serde_json::Value> {
         "room": *state.room.lock().unwrap(),
         "room_check": *state.room_check.lock().unwrap(),
         "room_guide": crate::room::guide(),
+        "outages": outage_view(&state, &cur.key, Some(7)),
     }))
 }
 
@@ -501,6 +505,7 @@ async fn auto_scan_loop(state: Shared) {
 struct SettingsUpdate {
     auto_scan_minutes: Option<u32>,
     notifications: Option<bool>,
+    outage_log: Option<bool>,
 }
 
 async fn update_settings(State(state): State<Shared>, Json(update): Json<SettingsUpdate>) -> ApiResult<StatusCode> {
@@ -510,6 +515,9 @@ async fn update_settings(State(state): State<Shared>, Json(update): Json<Setting
     }
     if let Some(n) = update.notifications {
         s.notifications = n;
+    }
+    if let Some(o) = update.outage_log {
+        s.outage_log = o;
     }
     s.save(state.workspace.root())?;
     // Never echo settings back: they hold alert tokens and the phone key.
@@ -571,6 +579,96 @@ async fn start_doctor(State(state): State<Shared>) -> ApiResult<StatusCode> {
         finish(&state.doctor, error);
     });
     Ok(StatusCode::ACCEPTED)
+}
+
+#[derive(Deserialize)]
+struct DaysQuery {
+    days: Option<i64>,
+}
+
+/// Callers pass the network key so they never lock `current` twice.
+fn outage_summary(state: &AppState, key: &str, days: Option<i64>) -> crate::outages::Summary {
+    let log = crate::outages::Log::load(&state.workspace.dir(key));
+    crate::outages::summarize(&log, days.unwrap_or(7).clamp(1, 90), Utc::now())
+}
+
+async fn outages(State(state): State<Shared>, Query(q): Query<DaysQuery>) -> Json<serde_json::Value> {
+    let key = current(&state).key.clone();
+    Json(outage_view(&state, &key, q.days))
+}
+
+fn outage_view(state: &AppState, key: &str, days: Option<i64>) -> serde_json::Value {
+    let summary = outage_summary(state, key, days);
+    let live = state.outage_live.lock().unwrap().clone();
+    let by_cause: Vec<_> = summary
+        .by_cause
+        .iter()
+        .map(|(c, (n, secs))| json!({ "cause": c, "label": c.label(), "count": n, "secs": secs }))
+        .collect();
+    let log = crate::outages::Log::load(&state.workspace.dir(key));
+    let since = Utc::now() - chrono::TimeDelta::days(days.unwrap_or(7).clamp(1, 90));
+    let watched: Vec<_> = log.watched.iter().filter(|w| w.to >= since).collect();
+    let causes: Vec<_> = crate::outages::Cause::ALL
+        .iter()
+        .map(|c| json!({ "cause": c, "label": c.label(), "explain": c.explain() }))
+        .collect();
+    json!({
+        "enabled": settings(state).outage_log,
+        "network": crate::outages::network_label(&state.workspace, key),
+        "live": live,
+        "summary": summary,
+        "by_cause": by_cause,
+        "watched": watched,
+        "causes": causes,
+    })
+}
+
+async fn outage_report(State(state): State<Shared>, Query(q): Query<DaysQuery>) -> Response {
+    let key = current(&state).key.clone();
+    let summary = outage_summary(&state, &key, Some(q.days.unwrap_or(30)));
+    let body = crate::outages::report(&summary, &crate::outages::network_label(&state.workspace, &key));
+    let disposition = format!("attachment; filename=\"outage-report-{}.md\"", Utc::now().format("%Y-%m-%d"));
+    (
+        [
+            (header::CONTENT_TYPE, "text/markdown; charset=utf-8".to_string()),
+            (header::CONTENT_DISPOSITION, disposition),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+/// Runs the outage monitor for as long as the server is up; it idles while
+/// the setting is off.
+fn spawn_outage_monitor(state: Shared) {
+    let root = state.workspace.root().to_path_buf();
+    let interface = state.scan_opts.interface.clone();
+    let (s1, s2, s3) = (state.clone(), state.clone(), state);
+    tokio::spawn(crate::outages::monitor(
+        root,
+        interface,
+        move || settings(&s1).outage_log,
+        move |live| *s2.outage_live.lock().unwrap() = live,
+        move |update| {
+            let crate::outages::Update::Ended { outage, .. } = update else { return };
+            // Short blips aren't worth interrupting anyone for; they're in the log.
+            if outage.duration(Utc::now()).num_seconds() < 60 || outage.cut_short {
+                return;
+            }
+            let settings = settings(&s3).clone();
+            tokio::spawn(async move {
+                let (title, body) = crate::outages::ended_message(&outage, Utc::now());
+                if settings.notifications {
+                    let _ = notify::send(&title, &body).await;
+                }
+                for target in &settings.alerts {
+                    if let Err(e) = alerts::send(target, &title, &body, &[]).await {
+                        eprintln!("alert: {e:#}");
+                    }
+                }
+            });
+        },
+    ));
 }
 
 async fn start_room_check(State(state): State<Shared>) -> ApiResult<StatusCode> {
@@ -781,6 +879,8 @@ pub fn router(state: Shared, access: Access) -> Router {
         .route("/api/doctor", post(start_doctor))
         .route("/api/speedtest", post(start_speedtest_route))
         .route("/api/room-check", post(start_room_check))
+        .route("/api/outages", get(outages))
+        .route("/api/outages/report", get(outage_report))
         .route("/api/trust-all", post(trust_all))
         .route("/api/devices/{id}", patch(update_device).delete(forget_device))
         .route("/api/devices/{id}/wake", post(wake_device))
@@ -835,6 +935,7 @@ pub async fn serve(opts: ServeOptions) -> Result<()> {
         speed: Arc::default(),
         room: Arc::default(),
         room_check: Mutex::new(last_room_check),
+        outage_live: Mutex::default(),
         scan_opts: opts.scan_opts,
         settings: Mutex::new(settings),
         phone: Mutex::new(None),
@@ -879,6 +980,7 @@ pub async fn serve(opts: ServeOptions) -> Result<()> {
         println!("Phones on your network can open: {link}");
     }
     tokio::spawn(auto_scan_loop(state.clone()));
+    spawn_outage_monitor(state.clone());
     axum::serve(listener, router(state, Access::Local))
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
@@ -921,6 +1023,7 @@ mod tests {
             speed: Arc::default(),
             room: Arc::default(),
             room_check: Mutex::default(),
+            outage_live: Mutex::default(),
             scan_opts: ScanOptions::default(),
             token: "secret".into(),
             remote: false,

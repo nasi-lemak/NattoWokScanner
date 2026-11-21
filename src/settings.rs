@@ -17,6 +17,8 @@ pub struct Settings {
     /// Phone alerts for the same events (contains tokens, so the file is
     /// readable only by its owner).
     pub alerts: Vec<crate::alerts::AlertTarget>,
+    /// Check the internet connection once a minute and log outages.
+    pub outage_log: bool,
     /// Let devices on the local network open the dashboard with `phone_key`.
     pub phone_access: bool,
     #[serde(skip_serializing_if = "Option::is_none")]

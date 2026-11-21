@@ -432,3 +432,11 @@ textarea { min-height: 70px; resize: vertical; }
 .room-guide h4 { margin: 2px 0 6px; }
 .room-guide ul, .room-guide ol { margin: 0; padding-left: 20px; font-size: 14px; }
 .room-guide li { margin: 6px 0; }
+
+/* Outage log */
+.seg.out-provider, .sw.out-provider { background: var(--bad); border-color: var(--bad); }
+.seg.out-home, .sw.out-home { background: var(--warn); border-color: var(--warn); }
+.seg.out-unclear, .sw.out-unclear { background: repeating-linear-gradient(135deg, var(--bad) 0 3px, var(--warn) 3px 6px); border-color: var(--bad); }
+.seg.out-provider, .seg.out-home, .seg.out-unclear { border-radius: 3px; box-shadow: 0 0 0 1px var(--surface); }
+.dns-table .sw { display: inline-block; vertical-align: -1px; margin-right: 4px; }
+.pres-key { flex-wrap: wrap; row-gap: 6px; }

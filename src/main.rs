@@ -66,6 +66,17 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Log internet outages and make a report for your provider. Shows the
+    /// last week; `on` starts logging (it checks the internet once a minute)
+    Outages {
+        #[command(subcommand)]
+        action: Option<OutageAction>,
+        /// How many days to show
+        #[arg(long, default_value_t = 7, value_parser = clap::value_parser!(i64).range(1..=90))]
+        days: i64,
+        #[arg(long)]
+        json: bool,
+    },
     /// Look for hidden cameras on the Wi-Fi of a rental or hotel room.
     /// Only finds devices: never logs in to them or opens their video.
     /// Not saved to your device list
@@ -261,6 +272,7 @@ enum ExportFormat {
     Anonymised,
 }
 
+#[derive(Clone)]
 struct Paint {
     on: bool,
 }
@@ -290,6 +302,24 @@ impl Paint {
     fn blue(&self, s: &str) -> String {
         self.wrap("34", s)
     }
+}
+
+#[derive(Subcommand)]
+enum OutageAction {
+    /// Start logging (while NattoWok runs; see `nattowok service install`)
+    On,
+    /// Stop logging (what's recorded is kept)
+    Off,
+    /// A report to send to your internet provider (Markdown)
+    Report {
+        #[arg(long, default_value_t = 30, value_parser = clap::value_parser!(i64).range(1..=90))]
+        days: i64,
+        /// Write to a file instead of the terminal
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+    /// Log in this terminal until you press Ctrl+C, without the dashboard
+    Watch,
 }
 
 #[tokio::main]
@@ -479,6 +509,79 @@ async fn run(cli: Cli) -> Result<()> {
                     r.location.as_deref().map(|l| format!(" · server: Cloudflare {l}")).unwrap_or_default()
                 ))
             );
+            Ok(())
+        }
+        Command::Outages { action, days, json } => {
+            use nattowok::outages;
+            let mut settings = nattowok::settings::Settings::load(&data_dir);
+            let key = workspace.key_for(netinfo::detect(cli.interface.as_deref(), None).ok().as_ref());
+            let label = outages::network_label(&workspace, &key);
+            match action {
+                Some(OutageAction::On) => {
+                    settings.outage_log = true;
+                    settings.save(&data_dir)?;
+                    println!("The outage log is on. It checks the internet once a minute while NattoWok runs.");
+                    println!(
+                        "{}",
+                        paint.dim("To keep it recording when the dashboard is closed: `nattowok service install`.")
+                    );
+                }
+                Some(OutageAction::Off) => {
+                    settings.outage_log = false;
+                    settings.save(&data_dir)?;
+                    println!("The outage log is off. What it recorded is kept.");
+                }
+                Some(OutageAction::Report { days, output }) => {
+                    let log = outages::Log::load(&workspace.dir(&key));
+                    let text = outages::report(&outages::summarize(&log, days, chrono::Utc::now()), &label);
+                    match output {
+                        Some(path) => {
+                            std::fs::write(&path, text)?;
+                            println!("Saved the report to {}", path.display());
+                        }
+                        None => print!("{text}"),
+                    }
+                }
+                Some(OutageAction::Watch) => {
+                    if settings.outage_log {
+                        bail!(
+                            "the outage log is already on, so the dashboard or background service is recording. \
+                             Run `nattowok outages off` first to watch here instead"
+                        );
+                    }
+                    println!("Checking the internet once a minute. Press Ctrl+C to stop.\n");
+                    let p = paint.clone();
+                    outages::monitor(
+                        data_dir.clone(),
+                        cli.interface.clone(),
+                        || true,
+                        |_| {},
+                        move |update| {
+                            let now = chrono::Local::now().format("%H:%M");
+                            match update {
+                                outages::Update::Started { outage, .. } => {
+                                    println!("  {now}  {} {}", p.red("Internet down."), outage.cause.explain())
+                                }
+                                outages::Update::Ended { outage, .. } => println!(
+                                    "  {now}  {} after {}",
+                                    p.green("Back up"),
+                                    outages::human(outage.duration(chrono::Utc::now()).num_seconds())
+                                ),
+                            }
+                        },
+                    )
+                    .await;
+                }
+                None => {
+                    let log = outages::Log::load(&workspace.dir(&key));
+                    let summary = outages::summarize(&log, days, chrono::Utc::now());
+                    if json {
+                        println!("{}", serde_json::to_string_pretty(&summary)?);
+                        return Ok(());
+                    }
+                    print_outages(&paint, &summary, &label, settings.outage_log);
+                }
+            }
             Ok(())
         }
         Command::RoomCheck { json } => {
@@ -1243,4 +1346,51 @@ fn print_room_check(paint: &Paint, check: &room::RoomCheck) {
         println!("  {}. {}: {text}", i + 1, paint.bold(title));
     }
     println!("\n  {}", paint.dim("NattoWok only finds devices. It never logs in to them or opens their video."));
+}
+
+fn print_outages(paint: &Paint, s: &nattowok::outages::Summary, network: &str, enabled: bool) {
+    use nattowok::outages::{self, Cause};
+    let days = (s.period_secs + 3600) / 86400;
+    println!("\n  {} {}", paint.bold(&format!("Outages on \"{network}\"")), paint.dim(&format!("(last {days} days)")));
+    if !enabled {
+        println!("  {}", paint.yellow("The outage log is off. Turn it on with `nattowok outages on`."));
+    }
+    if s.watched_secs == 0 {
+        println!("\n  Nothing recorded yet.\n");
+        return;
+    }
+    let coverage = 100.0 * s.watched_secs as f64 / s.period_secs.max(1) as f64;
+    let uptime = s.uptime_pct.map(|p| format!("{p:.2}%")).unwrap_or_default();
+    let headline = if s.outages.is_empty() {
+        paint.green("No outages")
+    } else {
+        let n = s.outages.len();
+        paint.yellow(&format!("{n} outage{}, {} in total", if n == 1 { "" } else { "s" }, outages::human(s.down_secs)))
+    };
+    println!("\n  {}  {}", paint.bold(&headline), paint.dim(&format!("internet worked {uptime} of the time checked")));
+    println!("  {}", paint.dim(&format!("Checked {coverage:.0}% of the period (only while this computer was on).")));
+    if !s.by_cause.is_empty() {
+        println!();
+        for (cause, (n, secs)) in &s.by_cause {
+            println!("  {:<28} {n:>3} × {}", cause.label(), outages::human(*secs));
+        }
+    }
+    if !s.outages.is_empty() {
+        println!();
+        for o in s.outages.iter().rev().take(20) {
+            let when = o.started.with_timezone(&chrono::Local).format("%a %-d %b %H:%M");
+            let mark = match o.cause {
+                Cause::Provider | Cause::Dns => paint.red("●"),
+                Cause::RouterOrProvider => paint.yellow("●"),
+                Cause::Local | Cause::Router => paint.blue("●"),
+            };
+            let still = if o.ended.is_none() { " (still down)" } else { "" };
+            println!(
+                "  {mark} {when}  {:>9}  {}{still}",
+                outages::human(o.duration(chrono::Utc::now()).num_seconds()),
+                o.cause.label()
+            );
+        }
+    }
+    println!("\n  {}", paint.dim("`nattowok outages report -o report.md` makes a report for your internet provider."));
 }

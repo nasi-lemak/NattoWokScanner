@@ -25,6 +25,7 @@ NattoWok is a network scanner in the spirit of Fing. It's built around a differe
 | Not knowing what's reachable from the internet | NattoWok asks your router which ports apps and devices **opened to the internet** (UPnP), and rates each one: remote desktop and databases are serious, game and voice-chat ports are normal. It also spots when your provider shares your public address, so forwards can't actually be reached. |
 | Only finding out about a new device when you happen to look | `nattowok service install` keeps NattoWok running in the background (starting at log-in), **scanning on a schedule and sending desktop notifications** for new devices and security issues. No admin rights needed. |
 | "Is that device usually here?" | Every device gets a **week view of when it was online**, with a plain summary ("usually online between 18:00 and 08:00"). Times NattoWok wasn't scanning are shown as such, never as "offline". A **Who's home** panel (and `nattowok home`) uses household phones as a stand-in for people. |
+| "The internet keeps dropping" and the provider says it's fine | Turn on the **outage log** (`nattowok outages on`, or the Internet doctor tab). While NattoWok runs it checks once a minute and records every outage: when, how long, and **where the fault was**: this computer, your Wi-Fi or router, or the provider (the router answered, the internet didn't). A week chart shows them, you're notified when the internet comes back after one, and **Report for your provider** gives a dated table of their outages, with the home-side ones listed separately so it's fair. |
 | Speed tests that ignore the thing you actually feel | The **speed test** (`nattowok speed`, or the Internet doctor tab) measures download and upload *and how much delay grows while the line is busy*: the "bufferbloat" behind laggy calls when someone streams. It grades it A–F and names the router setting that fixes it (Smart Queue / SQM), with speeds to set. Results are kept, so you can see whether your provider delivers. |
 | "Turn off UPnP in your router"… but where? | NattoWok recognises your router (ASUS, TP-Link, Deco, Netgear, Orbi, eero, Google/Nest, FRITZ!Box, Linksys, UniFi, MikroTik, OpenWrt, D-Link) and every fix comes with **where that setting lives on your model**, plus an "Open router settings" button. Provider-supplied routers get clear general steps. `nattowok router` lists them all. |
 | Cameras and smart plugs on the same network as your laptop | Flags gadgets that rarely get security updates sharing your main network, and walks you through moving them to the router's **guest/IoT network**. |
@@ -82,6 +83,8 @@ nattowok scan --no-ports --json     # quick scan, machine-readable
 nattowok devices                    # everything known on this network, online or not
 nattowok doctor                     # why is the internet slow?
 nattowok speed                      # speed + lag under load; --history for past results
+nattowok outages on                 # log internet outages (then `nattowok outages` to see them)
+nattowok outages report -o isp.md   # a report to send your internet provider
 nattowok ports "Hallway camera"     # check ~1,100 ports on one device
 nattowok label 192.168.1.52 --name "Hallway camera" --trust --tag outdoor
 nattowok label 192.168.1.77 --kind smart_home   # correct a wrong guess (--kind auto undoes it)
@@ -172,11 +175,12 @@ Data lives in your OS data folder (`~/.local/share/nattowok`, `~/Library/Applica
 
 ## Privacy and safety
 
-- **Local only.** Phone alerts, if you set them up, send their text to the service you chose. Apart from that, only three features talk to the internet, and only when you run them: the Internet doctor (a few TCP connects and DNS queries to Cloudflare, Google and Quad9, plus Google's standard connectivity check), the speed test (Cloudflare's public speed-test service) and `update-vendors` (downloads the IEEE's public registry). Nothing about your network is sent anywhere, and results stay on your computer.
+- **Local only.** Phone alerts, if you set them up, send their text to the service you chose. Apart from that, only four features talk to the internet, and only when you run or turn them on: the Internet doctor (a few TCP connects and DNS queries to Cloudflare, Google and Quad9, plus Google's standard connectivity check), the outage log (the same kind of check, once a minute), the speed test (Cloudflare's public speed-test service) and `update-vendors` (downloads the IEEE's public registry). Nothing about your network is sent anywhere, and results stay on your computer.
 - **The dashboard listens on localhost by default.** Every API call needs a random per-run token embedded in the page, which other websites can't read. Requests whose `Host` isn't localhost are refused, which blocks DNS-rebinding attacks. `--listen 0.0.0.0:7878` exposes it on purpose; access then requires a key printed in the terminal.
 - **Phone access is off until you turn it on.** It then listens on this computer's local-network address too, answering only requests addressed to that address and carrying the phone link's own random key (separate from the desktop one). "Make a new link" or `nattowok phone --new-link` replaces the key; turning it off closes that listener. The connection is plain HTTP inside your network, so only use it on networks you trust.
 - **Polite scanning.** NattoWok only connects. It never logs in, never tries passwords, never opens a camera's video, and only follows UPnP description URLs that point back at the device that announced them.
 - **The anonymised export is yours to share or not.** It removes names, notes and tags you added, IP addresses, the unique half of every hardware address (all of it for private addresses), your Wi-Fi name and your public address, and turns personal words in device-announced names into `*`. Nothing is uploaded; read the file before sending it anywhere.
+- **The outage log is off until you turn it on.** It then connects to Cloudflare (1.1.1.1), Google (8.8.8.8) and Quad9 (9.9.9.9) on port 443 and asks your DNS server about `example.com`, once a minute while NattoWok runs. Only success or failure is recorded, on this computer, for up to 90 days.
 - **Router exposure is read-only.** NattoWok asks the router for its port-forwarding list; it never adds or removes mappings.
 - Only scan networks you own or are allowed to scan.
 
@@ -211,6 +215,7 @@ Layout:
 | `src/store.rs` | Per-network inventory, change tracking, merging |
 | `src/matching.rs` | Recognising devices that return under a new hardware address |
 | `src/speedtest.rs`, `src/fetch.rs` | Speed and bufferbloat test; small HTTPS client |
+| `src/outages.rs` | Outage log and the report for your provider |
 | `src/doctor.rs`, `src/wifi.rs` | Internet doctor, Wi-Fi signal and channel readings |
 | `src/upnp.rs` | Router port-forwarding (exposure) queries |
 | `src/alerts.rs` | Phone alerts (ntfy, Telegram, Discord, webhooks) |

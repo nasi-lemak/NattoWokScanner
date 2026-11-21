@@ -17,6 +17,7 @@ pub mod netinfo;
 pub mod notify;
 pub mod onvif;
 pub mod oui;
+pub mod outages;
 pub mod probe;
 pub mod report;
 pub mod room;

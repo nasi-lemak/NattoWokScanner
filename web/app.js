@@ -623,6 +623,89 @@ function speedPanel(d) {
   </div>`;
 }
 
+// ---------- outage log ----------
+
+const OUTAGE_CLASS = { provider: "out-provider", dns: "out-provider", router: "out-home", local: "out-home", router_or_provider: "out-unclear" };
+
+function fmtSecs(s) {
+  if (s < 60) return `${s} s`;
+  const m = Math.round(s / 60);
+  return m < 60 ? `${m} min` : `${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ""}`;
+}
+
+function outageChart(o) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const causeLabel = Object.fromEntries(o.causes.map((c) => [c.cause, c.label]));
+  const watched = o.watched.map((w) => [new Date(w.from).getTime(), new Date(w.to).getTime()]);
+  const outs = o.summary.outages.map((x) => [new Date(x.started).getTime(), x.ended ? new Date(x.ended).getTime() : Date.now(), x]);
+  const rows = [];
+  for (let i = 6; i >= 0; i--) {
+    const start = today.getTime() - i * DAY;
+    const end = start + DAY;
+    const seg = (a, b, cls, tip, min = 0) => {
+      const from = Math.max(a, start);
+      const to = Math.min(b, end);
+      if (to < from || from >= end) return "";
+      const left = ((from - start) / DAY) * 100;
+      const width = Math.max(min, ((to - from) / DAY) * 100);
+      return `<span class="seg ${cls}" style="left:${left.toFixed(2)}%;width:${Math.min(width, 100 - left).toFixed(2)}%" data-tip="${esc(tip)}"></span>`;
+    };
+    const ok = watched.map(([a, b]) => seg(a, b, "watched", `Checked ${fmtTime(Math.max(a, start))}–${fmtTime(Math.min(b, end))}: internet working`)).join("");
+    const down = outs.map(([a, b, x]) => seg(a, b, OUTAGE_CLASS[x.cause], `${causeLabel[x.cause]}: down ${fmtWhen(a)}${x.ended ? ` for ${fmtSecs(Math.round((b - a) / 1000))}` : ", still down"}`, 0.8)).join("");
+    const future = end > Date.now() ? seg(Date.now(), end, "future", "Later today") : "";
+    const label = i === 0 ? "Today" : new Date(start).toLocaleDateString(undefined, { weekday: "short" });
+    rows.push(`<div class="pres-row"><span class="pres-day">${esc(label)}</span><div class="pres-track" data-tip="Not checking (computer off or asleep, or NattoWok closed)">${ok}${down}${future}</div></div>`);
+  }
+  const axis = `<div class="pres-row axis"><span class="pres-day"></span><div class="pres-axis"><span>00</span><span>06</span><span>12</span><span>18</span><span>24</span></div></div>`;
+  const key = `<div class="pres-key"><span><i class="sw watched"></i>Working</span><span><i class="sw out-provider"></i>Internet provider or DNS</span><span><i class="sw out-home"></i>Inside your home</span><span><i class="sw out-unclear"></i>Router or provider</span><span><i class="sw"></i>Not checking</span></div>`;
+  return `<div class="presence" role="img" aria-label="${esc(outageText(o))}">${rows.join("")}${axis}</div>${key}`;
+}
+
+function outageText(o) {
+  const s = o.summary;
+  if (!s.outages.length) return "No outages in the last 7 days.";
+  return `${s.outages.length} outage${s.outages.length === 1 ? "" : "s"} in the last 7 days, ${fmtSecs(s.down_secs)} in total. ` +
+    o.by_cause.map((c) => `${c.label}: ${c.count} (${fmtSecs(c.secs)})`).join("; ") + ".";
+}
+
+function outagePanel(d) {
+  const o = d.outages;
+  if (!o) return "";
+  if (!o.enabled && !o.summary.watched_secs) {
+    return `<div class="panel"><div class="speed-head"><div><h3>Outage log</h3>
+      <p class="hint">Find out how often the internet really drops, for how long, and whether it's your Wi-Fi, your router or your internet provider, with a report you can send them. While NattoWok runs, it checks once a minute (a connection to Cloudflare, Google and Quad9, and a DNS lookup).</p></div>
+      <button class="btn primary" data-outage-log="on">Start the outage log</button></div></div>`;
+  }
+  const s = o.summary;
+  const live = o.live || {};
+  const status = live.down
+    ? `<div class="verdict fail"><h2>The internet is down right now</h2><p>Since ${esc(fmtWhen(new Date(live.down.started).getTime()))}. ${esc(o.causes.find((c) => c.cause === live.down.cause)?.explain || "")}</p></div>`
+    : "";
+  const coverage = s.period_secs ? Math.round((100 * s.watched_secs) / s.period_secs) : 0;
+  const tiles = `<div class="speed-tiles">
+    <div><span class="label">Outages, last 7 days</span><span class="big">${s.outages.length}</span><span class="unit">${s.outages.length ? `${fmtSecs(s.down_secs)} in total` : "none"}</span></div>
+    <div><span class="label">Internet worked</span><span class="big">${s.uptime_pct != null ? `${s.uptime_pct}%` : "–"}</span><span class="unit">of the time checked</span></div>
+    <div><span class="label">Checked</span><span class="big">${coverage}%</span><span class="unit">of the week</span></div>
+  </div>`;
+  const list = [...s.outages].reverse().slice(0, 8).map((x) => {
+    const label = o.causes.find((c) => c.cause === x.cause)?.label || x.cause;
+    const dur = x.ended ? fmtSecs(Math.round((new Date(x.ended) - new Date(x.started)) / 1000)) : "still down";
+    return `<tr><td>${esc(fmtWhen(new Date(x.started).getTime()))}</td><td>${esc(dur)}${x.cut_short ? " <span class=\"hint\">(monitoring stopped)</span>" : ""}</td><td><i class="sw ${OUTAGE_CLASS[x.cause]}"></i> ${esc(label)}</td></tr>`;
+  }).join("");
+  const running = o.enabled
+    ? `Checking every minute${live.last_check ? ` · last check ${esc(ago(live.last_check))}` : ""} · <a data-outage-log="off">Stop</a>`
+    : `Paused · <a data-outage-log="on">Start again</a>`;
+  const bg = o.enabled && !d.service_mode ? ` It only checks while NattoWok is open; <code>nattowok service install</code> keeps it going in the background.` : "";
+  return `<div class="panel"><div class="speed-head"><div><h3>Outage log</h3><p class="hint">On “${esc(o.network)}”. ${running}.${bg}</p></div>
+      <button class="btn" id="outage-report" ${s.watched_secs ? "" : "disabled"}>Report for your provider</button></div>
+    ${status}${tiles}
+    ${outageChart(o)}
+    <p class="hint" style="margin-top:8px">${esc(outageText(o))}</p>
+    ${list ? `<table class="dns-table"><thead><tr><th>Started</th><th>How long</th><th>Where the fault was</th></tr></thead><tbody>${list}</tbody></table>` : ""}
+  </div>`;
+}
+
 function renderDoctor(d) {
   const el = $("#tab-doctor");
   const diag = d.diagnosis;
@@ -632,7 +715,7 @@ function renderDoctor(d) {
       <button class="btn primary" id="doctor-btn" ${running ? "disabled" : ""}>${running ? "Diagnosing…" : diag ? "Run again" : "Diagnose my connection"}</button>
     </div>`;
   if (!diag) {
-    el.innerHTML = intro + (d.doctor.error ? `<p class="badge bad">${esc(d.doctor.error)}</p>` : "") + speedPanel(d);
+    el.innerHTML = intro + (d.doctor.error ? `<p class="badge bad">${esc(d.doctor.error)}</p>` : "") + outagePanel(d) + speedPanel(d);
     return;
   }
   const byId = Object.fromEntries(diag.checks.map((c) => [c.id, c]));
@@ -665,7 +748,7 @@ function renderDoctor(d) {
     <div class="chain" style="grid-template-columns:repeat(${hops.length},1fr)">${chain}</div>
     ${checks}${dns}
     <p class="note">Checked ${esc(ago(diag.at))}.</p>
-    ${speedPanel(d)}`;
+    ${outagePanel(d)}${speedPanel(d)}`;
 }
 
 // ---------- room check ----------
@@ -1058,7 +1141,7 @@ function setFilter(filter) {
 }
 
 document.addEventListener("click", async (e) => {
-  const t = e.target.closest("[data-device],[data-tab],[data-filter],[data-goto-filter],[data-goto-tab],[data-ignore],[data-unignore],[data-export],#trust-all,#review-start,#doctor-btn,#speed-btn,#room-btn");
+  const t = e.target.closest("[data-device],[data-tab],[data-filter],[data-goto-filter],[data-goto-tab],[data-ignore],[data-unignore],[data-export],#trust-all,#review-start,#doctor-btn,#speed-btn,#room-btn,[data-outage-log],#outage-report");
   if (!e.target.closest(".menu")) {
     $("#export-menu").hidden = true;
     $("#settings-menu").hidden = true;
@@ -1091,6 +1174,19 @@ document.addEventListener("click", async (e) => {
     if (t.id === "doctor-btn") await api("/api/doctor", { method: "POST" });
     if (t.id === "speed-btn") await api("/api/speedtest", { method: "POST" });
     if (t.id === "room-btn") await api("/api/room-check", { method: "POST" });
+    if (t.dataset.outageLog) {
+      await api("/api/settings", { method: "PATCH", body: JSON.stringify({ outage_log: t.dataset.outageLog === "on" }) });
+      toast(t.dataset.outageLog === "on" ? "Outage log on: checking once a minute" : "Outage log paused");
+    }
+    if (t.id === "outage-report") {
+      const resp = await api("/api/outages/report?days=30");
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(await resp.blob());
+      a.download = (resp.headers.get("content-disposition") || "").match(/filename="([^"]+)"/)?.[1] || "outage-report.md";
+      a.click();
+      URL.revokeObjectURL(a.href);
+      return;
+    }
     await refresh();
   } catch (err) { toast(err.message); }
 });
