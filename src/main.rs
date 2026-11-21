@@ -226,6 +226,9 @@ enum Command {
     Networks,
     /// Download the latest manufacturer list from the IEEE (about 4 MB)
     UpdateVendors,
+    /// Download the latest list of security flaws attackers are using
+    /// (CISA's Known Exploited Vulnerabilities), for router and camera warnings
+    UpdateFlaws,
     /// Show this computer's network settings
     Info {
         #[arg(long)]
@@ -403,6 +406,7 @@ async fn run(cli: Cli) -> Result<()> {
     let data_dir = cli.data_dir.clone().unwrap_or_else(nattowok::store::default_dir);
     let workspace = Workspace::new(data_dir.clone());
     nattowok::oui::init(&data_dir);
+    nattowok::flaws::init(&data_dir);
     let current = || workspace.load_current(cli.interface.as_deref());
     let paint = Paint::new();
     let command = cli.command.unwrap_or(Command::Ui {
@@ -1249,6 +1253,37 @@ async fn run(cli: Cli) -> Result<()> {
             std::fs::write(&tmp, oui::encode_table(&rows)?)?;
             std::fs::rename(&tmp, &path)?;
             println!("Updated: {} manufacturers (was: {before}). Saved to {}", rows.len(), path.display());
+            Ok(())
+        }
+        #[cfg(not(feature = "tls"))]
+        Command::UpdateFlaws => {
+            bail!("this build of NattoWok can't download updates (built without the `tls` feature)")
+        }
+        #[cfg(feature = "tls")]
+        Command::UpdateFlaws => {
+            use nattowok::flaws;
+            let before = flaws::source();
+            eprintln!("Downloading CISA's Known Exploited Vulnerabilities catalog…");
+            let json = nattowok::fetch::get(flaws::KEV_URL, 30_000_000).await?;
+            let catalog = flaws::from_kev(&String::from_utf8_lossy(&json))?;
+            // A partial or garbled download must never replace a good list.
+            anyhow::ensure!(
+                catalog.flaws.len() > 30 && !catalog.version.is_empty(),
+                "the download looks incomplete ({} entries); keeping the current list",
+                catalog.flaws.len()
+            );
+            std::fs::create_dir_all(&data_dir)?;
+            let path = data_dir.join(flaws::UPDATED_FILE);
+            let tmp = path.with_extension("json.tmp");
+            std::fs::write(&tmp, serde_json::to_vec_pretty(&catalog)?)?;
+            std::fs::rename(&tmp, &path)?;
+            println!(
+                "Updated: catalog {} ({} entries for home routers, cameras and storage; was {before}). Saved to {}",
+                catalog.version,
+                catalog.flaws.len(),
+                path.display()
+            );
+            println!("{}", paint.dim("Run a scan to check your devices against it."));
             Ok(())
         }
         Command::Info { json } => {

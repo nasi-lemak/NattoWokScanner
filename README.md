@@ -31,6 +31,7 @@ NattoWok is a network scanner in the spirit of Fing. It's built around a differe
 | "Am I getting the speed I pay for?" | Enter your plan's speed (`nattowok plan 500/50`, or under the speed test) and every test is compared with it **by time of day**: *"Evenings average 34% of your plan's download speed (21 tests); nights 95%"*. Optionally let NattoWok test once, twice or four times a day at varying times, only on the network you turned it on for, so a phone hotspot is never used up. It points out when Wi-Fi rather than the provider may be the limit. |
 | Speed tests that ignore the thing you actually feel | The **speed test** (`nattowok speed`, or the Internet doctor tab) measures download and upload *and how much delay grows while the line is busy*: the "bufferbloat" behind laggy calls when someone streams. It grades it A–F and names the router setting that fixes it (Smart Queue / SQM), with speeds to set. Results are kept, so you can see whether your provider delivers. |
 | "Turn off UPnP in your router"… but where? | NattoWok recognises your router (ASUS, TP-Link, Deco, Netgear, Orbi, eero, Google/Nest, FRITZ!Box, Linksys, UniFi, MikroTik, OpenWrt, D-Link) and every fix comes with **where that setting lives on your model**, plus an "Open router settings" button. Provider-supplied routers get clear general steps. `nattowok router` lists them all. |
+| Not knowing your router or camera is a model attackers are going after | Devices are checked against the US cybersecurity agency's (CISA) list of **flaws being used in real attacks**, filtered to home router, camera and storage brands. A match needs both the brand and an exact model name (e.g. a TP-Link reporting "Archer AX21"); the warning says what the flaw is, and whether to update the firmware or, for models the maker no longer fixes, plan a replacement. A few brands whose own software is a frequent target (MikroTik RouterOS, Synology DSM, QNAP, Hikvision, Dahua) get a gentler "keep it updated". `nattowok update-flaws` fetches the current list. |
 | Cameras and smart plugs on the same network as your laptop | Flags gadgets that rarely get security updates sharing your main network, and walks you through moving them to the router's **guest/IoT network**. |
 | Reviewing a long list of devices is a chore | A **guided review** shows one device at a time: *Yes, it's mine* (name it as you go), *Not sure, help me find it* (switches on Live mode), *I don't recognise it* (with what to do next), or *Skip*. If NattoWok guessed the type wrong, pick the right one; your choice sticks across scans. |
 | Alerts that only reach you at your desk | **Phone alerts** through ntfy (free app, no account), Telegram, Discord or any webhook such as Home Assistant: `nattowok alerts ntfy`, or the bell menu. Tokens are kept in a settings file only you can read and are never shown in the dashboard. |
@@ -106,6 +107,7 @@ nattowok phone                      # QR code to open the dashboard on your phon
 nattowok networks                   # the networks NattoWok remembers
 nattowok info                       # this computer's network settings
 nattowok update-vendors             # fetch the latest manufacturer list from the IEEE
+nattowok update-flaws               # fetch CISA's latest list of actively exploited flaws
 ```
 
 Devices can be referred to by name, IP or MAC.
@@ -181,7 +183,7 @@ Data lives in your OS data folder (`~/.local/share/nattowok`, `~/Library/Applica
 
 ## Privacy and safety
 
-- **Local only.** Phone alerts, if you set them up, send their text to the service you chose. Apart from that, only four features talk to the internet, and only when you run or turn them on: the Internet doctor (a few TCP connects and DNS queries to Cloudflare, Google and Quad9, plus Google's standard connectivity check), the outage log (the same kind of check, once a minute), the speed test (Cloudflare's public speed-test service, also on a schedule if you turn that on) and `update-vendors` (downloads the IEEE's public registry). Nothing about your network is sent anywhere, and results stay on your computer.
+- **Local only.** Phone alerts, if you set them up, send their text to the service you chose. Apart from that, only five features talk to the internet, and only when you run or turn them on: the Internet doctor (a few TCP connects and DNS queries to Cloudflare, Google and Quad9, plus Google's standard connectivity check), the outage log (the same kind of check, once a minute), the speed test (Cloudflare's public speed-test service, also on a schedule if you turn that on) `update-vendors` (downloads the IEEE's public registry) and `update-flaws` (downloads CISA's public list). Checking devices against the flaw list happens on your computer. Nothing about your network is sent anywhere, and results stay on your computer.
 - **The dashboard listens on localhost by default.** Every API call needs a random per-run token embedded in the page, which other websites can't read. Requests whose `Host` isn't localhost are refused, which blocks DNS-rebinding attacks. `--listen 0.0.0.0:7878` exposes it on purpose; access then requires a key printed in the terminal.
 - **Phone access is off until you turn it on.** It then listens on this computer's local-network address too, answering only requests addressed to that address and carrying the phone link's own random key (separate from the desktop one). "Make a new link" or `nattowok phone --new-link` replaces the key; turning it off closes that listener. The connection is plain HTTP inside your network, so only use it on networks you trust.
 - **Polite scanning.** NattoWok only connects. It never logs in, never tries passwords, never opens a camera's video, and only follows UPnP description URLs that point back at the device that announced them.
@@ -194,6 +196,7 @@ Data lives in your OS data folder (`~/.local/share/nattowok`, `~/Library/Applica
 
 - IPv4 only for discovery. On networks bigger than /22, the /24 around you is scanned unless you pass `--target`.
 - Identification is a well-reasoned guess. Devices that reveal nothing about themselves stay "Unknown" rather than being labelled wrongly. Give them a name and NattoWok will remember it.
+- Flaw warnings only cover devices that report their model name (most routers do over UPnP; many cameras don't), and NattoWok can't see firmware versions, so a warning means "check you're up to date", not "you're definitely vulnerable". No warning doesn't mean a device is safe.
 - Wi-Fi access-point isolation (common on guest networks) hides other devices from any scanner.
 - Room check finds cameras on the network you're on and camera hotspots in range; see [Checking a room](#checking-a-room-for-hidden-cameras) for what it can't see. Nearby network names come from the system's last Wi-Fi scan, and recent macOS versions hide them unless the app has Location access.
 - The speed test stops early once it has moved about 450 MB, enough for an accurate number on most home connections. Multi-gigabit lines still use somewhat more.
@@ -226,6 +229,7 @@ Layout:
 | `src/reach.rs` | "Why can't I connect to it?" troubleshooting |
 | `src/coverage.rs` | Room-by-room Wi-Fi coverage walk |
 | `src/plan.rs` | Speed vs. your plan by time of day; when scheduled tests run |
+| `src/flaws.rs` | Matching devices against CISA's Known Exploited Vulnerabilities list |
 | `src/doctor.rs`, `src/wifi.rs` | Internet doctor, Wi-Fi signal and channel readings |
 | `src/upnp.rs` | Router port-forwarding (exposure) queries |
 | `src/alerts.rs` | Phone alerts (ntfy, Telegram, Discord, webhooks) |
@@ -238,6 +242,13 @@ The built-in vendor table in `data/oui.tsv.gz` is generated from the IEEE MA-L r
 ```sh
 curl -o oui.csv https://standards-oui.ieee.org/oui/oui.csv
 cargo run --example build_oui -- oui.csv data/oui.tsv.gz
+```
+
+The built-in flaw list in `data/flaws.json` is filtered from CISA's catalog the same way `nattowok update-flaws` does it:
+
+```sh
+curl -o kev.json https://www.cisa.gov/sites/default/files/feeds/known_exploited_vulnerabilities.json
+cargo run --example build_flaws -- kev.json
 ```
 
 ## License

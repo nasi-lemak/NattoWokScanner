@@ -166,6 +166,7 @@ pub fn device_findings(d: &Device) -> Vec<Finding> {
             Some(d),
         ).with_topic(FixTopic::Upnp));
     }
+    out.extend(crate::flaws::findings(d));
     out
 }
 
