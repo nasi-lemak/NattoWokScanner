@@ -17,6 +17,7 @@ NattoWok is a network scanner in the spirit of Fing. It's built around a differe
 | "The internet is slow" with no idea why | The **Internet doctor** tests each hop (this computer → Wi-Fi → router → internet provider → DNS), tells you **which one is the problem**, and benchmarks DNS servers to suggest a faster one. On Wi-Fi it reads signal strength and counts neighbouring networks on your channel, so it can say *"weak signal, move closer"* or *"crowded channel, switch to 11"* instead of just "Wi-Fi is bad". It also spots Wi-Fi sign-in pages, and scans flag Wi-Fi with no password or outdated (WEP/WPA1) security. |
 | Having to remember what changed | A **timeline** of devices joining, leaving, changing address, or opening new ports. Mark devices you recognise as trusted, and anything new stands out. |
 | "Which box is this mystery device?" | Turn on **Live mode** and unplug things one at a time. The moment a device stops answering, its row turns red and NattoWok asks *"Is that what you unplugged? Name it."* The name sticks when you plug it back in. |
+| "Why can't I print / cast to the TV?" | Open the device and press **Find out why** (or `nattowok why printer`). NattoWok checks whether it's on, whether it **moved to a new address** (and where), whether its printing or casting service still answers, whether it still announces itself so phones can find it, and whether the network blocks discovery or hides devices from each other. Each problem comes with what to do. |
 | Phones coming back as "new" after changing their private address | When a newcomer matches a recently offline device (same name, model, ports, address…), NattoWok **carries the name over** automatically if it's certain, or asks *"Is this Sam's phone?"* with the reasons. |
 | Laptops mixing up home, office and café devices | Each network gets **its own inventory**, told apart by the router's hardware address. If your usual devices show up behind an unfamiliar router, you get a warning about possible impersonation. |
 | Needing an account or a phone app | Runs entirely on your computer. Nothing is uploaded anywhere. |
@@ -90,6 +91,7 @@ nattowok label 192.168.1.52 --name "Hallway camera" --trust --tag outdoor
 nattowok label 192.168.1.77 --kind smart_home   # correct a wrong guess (--kind auto undoes it)
 nattowok live                       # watch devices answer in real time; unplug one to find it
 nattowok merge 192.168.1.88 "Sam's phone"   # tell NattoWok two entries are one device
+nattowok why printer                # why can't I print / cast / connect to it?
 nattowok wake "Office PC"           # Wake-on-LAN
 nattowok export md -o report.md     # a report for whoever helps you with tech
 nattowok export anonymised -o sample.json   # scrubbed copy to help improve detection (read it, then share if you like)
@@ -216,6 +218,7 @@ Layout:
 | `src/matching.rs` | Recognising devices that return under a new hardware address |
 | `src/speedtest.rs`, `src/fetch.rs` | Speed and bufferbloat test; small HTTPS client |
 | `src/outages.rs` | Outage log and the report for your provider |
+| `src/reach.rs` | "Why can't I connect to it?" troubleshooting |
 | `src/doctor.rs`, `src/wifi.rs` | Internet doctor, Wi-Fi signal and channel readings |
 | `src/upnp.rs` | Router port-forwarding (exposure) queries |
 | `src/alerts.rs` | Phone alerts (ntfy, Telegram, Discord, webhooks) |

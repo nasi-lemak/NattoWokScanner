@@ -440,3 +440,9 @@ textarea { min-height: 70px; resize: vertical; }
 .seg.out-provider, .seg.out-home, .seg.out-unclear { border-radius: 3px; box-shadow: 0 0 0 1px var(--surface); }
 .dns-table .sw { display: inline-block; vertical-align: -1px; margin-right: 4px; }
 .pres-key { flex-wrap: wrap; row-gap: 6px; }
+
+/* Why can't I connect */
+.why-head { display: flex; justify-content: space-between; gap: 12px; align-items: flex-start; }
+.why-head h4 { margin: 0 0 4px; }
+.section.why .verdict { margin: 10px 0 8px; padding: 10px 12px; }
+.section.why .verdict p { margin: 0; font-size: 14px; }

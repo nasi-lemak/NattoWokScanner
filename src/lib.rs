@@ -19,6 +19,7 @@ pub mod onvif;
 pub mod oui;
 pub mod outages;
 pub mod probe;
+pub mod reach;
 pub mod report;
 pub mod room;
 pub mod routers;

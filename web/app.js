@@ -1000,6 +1000,7 @@ function renderDrawer(d) {
       <div class="actions"><button class="btn small primary" id="match-yes">Yes, same device</button><button class="btn small" id="match-no">No, it's a different one</button></div>
     </div>` : ""}
     <label class="switch"><input type="checkbox" id="dev-trusted" ${d.trusted ? "checked" : ""}> I recognise this device</label>
+    ${!d.is_self ? whySection(d) : ""}
 
     <div class="section">
       <h4>Why we think it's a ${esc((KIND_LABELS[d.kind] || "").toLowerCase())}</h4>
@@ -1043,6 +1044,27 @@ function renderDrawer(d) {
       </div>
     </div>`;
   wireDrawer(d);
+}
+
+// "Why can't I print or cast to it?" Results are kept per device so the
+// drawer's periodic re-render doesn't wipe them.
+function whySection(d) {
+  const w = state.why?.[d.id];
+  const intro = `<div class="why-head"><div><h4>Can't print, cast or connect to it?</h4>
+      <p class="hint">Checks whether it's on, where it went, whether its service answers, and whether phones can find it.</p></div>
+      <button class="btn small ${w && !w.running ? "" : "primary"}" id="act-why" ${w?.running ? "disabled" : ""}>${w?.running ? "Checking…" : w ? "Check again" : "Find out why"}</button></div>`;
+  if (!w || w.running || !w.help) return `<div class="section why">${intro}${w?.error ? `<p class="badge bad">${esc(w.error)}</p>` : ""}</div>`;
+  const h = w.help;
+  const tone = { pass: "pass", skip: "pass", warn: "warn", fail: "fail" }[h.status];
+  const checks = h.checks.map((c) => `<div class="check">
+      <div class="head"><strong>${esc(c.title)}</strong><span class="badge ${{ pass: "good", warn: "warn", fail: "bad", skip: "" }[c.status]}">${esc({ pass: "ok", warn: "problem", fail: "problem", skip: "note" }[c.status])}</span></div>
+      <p>${esc(c.detail)}</p>${c.advice ? `<p class="advice">💡 ${esc(c.advice)}</p>` : ""}</div>`).join("");
+  return `<div class="section why">${intro}
+    <div class="verdict ${tone}"><p><strong>${esc(h.headline)}</strong></p></div>
+    ${checks}
+    <p class="hint" style="margin-top:10px"><strong>Also check on the phone or computer that can't connect:</strong></p>
+    <ul class="reasons hint">${h.tips.map((t) => `<li>${esc(t)}</li>`).join("")}</ul>
+  </div>`;
 }
 
 async function saveDevice(id, patch) {
@@ -1089,6 +1111,19 @@ function wireDrawer(d) {
   const wake = $("#act-wake");
   if (wake) wake.onclick = async () => {
     try { await api(`/api/devices/${encodeURIComponent(d.id)}/wake`, { method: "POST" }); toast("Wake-up packet sent. Give it a minute to boot."); } catch (e) { toast(e.message); }
+  };
+  const why = $("#act-why");
+  if (why) why.onclick = async () => {
+    state.why = state.why || {};
+    state.why[d.id] = { running: true };
+    renderDrawer(d);
+    try {
+      state.why[d.id] = { help: await api(`/api/devices/${encodeURIComponent(d.id)}/why`, { method: "POST" }) };
+    } catch (e) {
+      state.why[d.id] = { error: e.message };
+    }
+    const fresh = state.data.report?.devices.find((x) => x.id === d.id) || d;
+    if (state.openDevice === d.id) renderDrawer(fresh);
   };
   const deep = $("#act-deep");
   if (deep) deep.onclick = async () => {

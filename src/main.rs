@@ -100,6 +100,14 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// "Why can't I print or cast to it?" Checks the usual reasons a device
+    /// can't be reached and says which one it is
+    Why {
+        /// Device name, IP or MAC
+        device: String,
+        #[arg(long)]
+        json: bool,
+    },
     /// Wake a sleeping computer with Wake-on-LAN
     Wake {
         /// Device name, IP or MAC
@@ -614,6 +622,44 @@ async fn run(cli: Cli) -> Result<()> {
                     println!("  {:>5}  {}{banner}", p.port, p.service);
                 }
             }
+            Ok(())
+        }
+        Command::Why { device, json } => {
+            let (_, inv) = current()?;
+            let id = resolve(&inv, &device)?.id.clone();
+            let view = inv.current_view().context("no scan yet: run `nattowok scan` first")?;
+            let d = view.devices.iter().find(|d| d.id == id).context("that device isn't in the last scan")?;
+            let info = netinfo::detect(cli.interface.as_deref(), None)?;
+            eprintln!("Checking {}…", d.display_name());
+            let help = nattowok::reach::diagnose(d, &inv, &info).await;
+            if json {
+                println!("{}", serde_json::to_string_pretty(&help)?);
+                return Ok(());
+            }
+            let headline = match help.status {
+                Status::Pass | Status::Skip => paint.green(&help.headline),
+                Status::Warn => paint.yellow(&help.headline),
+                Status::Fail => paint.red(&help.headline),
+            };
+            println!("\n  {}\n", paint.bold(&headline));
+            for c in &help.checks {
+                let mark = match c.status {
+                    Status::Pass => paint.green("✓"),
+                    Status::Skip => paint.dim("–"),
+                    Status::Warn => paint.yellow("!"),
+                    Status::Fail => paint.red("✗"),
+                };
+                println!("  {mark} {}", paint.bold(&c.title));
+                println!("    {}", c.detail);
+                if let Some(a) = &c.advice {
+                    println!("    {} {a}", paint.blue("→"));
+                }
+            }
+            println!("\n  {}", paint.bold("On the phone or computer that can't connect"));
+            for t in &help.tips {
+                println!("  – {t}");
+            }
+            println!();
             Ok(())
         }
         Command::Wake { device } => {

@@ -783,6 +783,19 @@ async fn deep_scan(State(state): State<Shared>, Path(id): Path<String>) -> ApiRe
     Ok(Json(described))
 }
 
+/// "Why can't I print or cast to it?"
+async fn why_device(State(state): State<Shared>, Path(id): Path<String>) -> ApiResult<Json<crate::reach::Help>> {
+    let (device, inv) = {
+        let cur = current(&state);
+        let view = cur.inv.current_view().ok_or_else(|| not_found("scan"))?;
+        let device = view.devices.into_iter().find(|d| d.id == id).ok_or_else(|| not_found("device"))?;
+        (device, cur.inv.clone())
+    };
+    let info = netinfo::detect(state.scan_opts.interface.as_deref(), None)
+        .map_err(|e| ApiError(StatusCode::SERVICE_UNAVAILABLE, format!("{e:#}")))?;
+    Ok(Json(crate::reach::diagnose(&device, &inv, &info).await))
+}
+
 #[derive(Deserialize)]
 struct OtherDevice {
     other: String,
@@ -885,6 +898,7 @@ pub fn router(state: Shared, access: Access) -> Router {
         .route("/api/devices/{id}", patch(update_device).delete(forget_device))
         .route("/api/devices/{id}/wake", post(wake_device))
         .route("/api/devices/{id}/deep-scan", post(deep_scan))
+        .route("/api/devices/{id}/why", post(why_device))
         .route("/api/devices/{id}/merge", post(merge_devices))
         .route("/api/devices/{id}/not-same", post(not_same))
         .route("/api/presence", get(presence))
